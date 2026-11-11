@@ -111,17 +111,21 @@
   .checks li { padding: 7px 0; font-size: 15px; align-items: baseline; }
   .checks .checkVal { text-align: right; color: var(--muted); }
   .hidden { display: none !important; }
-  #overlay { position: fixed; inset: 0; z-index: 10; display: flex; flex-direction: column; align-items: center;
-             justify-content: center; text-align: center; padding: 24px; background: #b45309; color: #fff;
-             animation: flash 1s steps(2, jump-none) infinite; }
-  @keyframes flash { from { background: #b45309; } to { background: #7c2d12; } }
+  /* The alert: a small banner at the top. The page underneath stays usable. */
+  #overlay { position: fixed; left: 12px; right: 12px; top: calc(12px + env(safe-area-inset-top)); z-index: 10;
+             max-width: 536px; margin: 0 auto; display: flex; align-items: center; gap: 12px; padding: 14px 14px 14px 16px;
+             background: #16181d; color: #fff; border: 1px solid #3a404b; border-left: 6px solid var(--star);
+             border-radius: 16px; box-shadow: 0 10px 30px rgba(0, 0, 0, .35); animation: drop .25s ease-out; }
+  @keyframes drop { from { transform: translateY(-140%); } to { transform: none; } }
   @media (prefers-reduced-motion: reduce) { #overlay { animation: none; } }
-  #overlay .star { font-size: 72px; }
-  #overlay .who { font-size: 40px; font-weight: 800; line-height: 1.15; margin: 8px 0; overflow-wrap: anywhere;
-                  white-space: pre-line; }
-  #overlay .who.many { font-size: 30px; }
-  #overlay .when { font-size: 20px; opacity: .9; }
-  #overlay .tap { margin-top: 36px; font-size: 17px; opacity: .85; }
+  #overlay .bell { font-size: 28px; flex: none; }
+  #overlay .txt { flex: 1; min-width: 0; }
+  #overlay .who { font-size: 21px; font-weight: 800; line-height: 1.2; overflow-wrap: anywhere; white-space: pre-line; }
+  #overlay .who.many { font-size: 17px; }
+  #overlay .when { font-size: 14px; opacity: .75; margin-top: 2px; }
+  #overlay .x { flex: none; font-size: 20px; opacity: .7; padding: 6px 8px; }
+  .row2 { display: flex; gap: 10px; margin-top: 10px; }
+  .row2 button { flex: 1; }
 </style>
 </head>
 <body>
@@ -236,7 +240,7 @@
       <input id="optSpeak" type="checkbox"></label>
     <label class="opt"><span>Intercom chime<small>The "bing-bong" chime. Off gives a faster triple beep.</small></span>
       <input id="optIntercom" type="checkbox"></label>
-    <label class="opt"><span>Say each name<small>One chime, then the voice. Repeats are 10 seconds apart, then the alert closes by itself.</small></span>
+    <label class="opt"><span>Say each name<small>One chime, then the voice. A repeat comes 10 seconds later, as sound only.</small></span>
       <select id="optTimes"><option value="1">Once</option><option value="2">Twice</option><option value="3">3 times</option></select></label>
     <label class="opt"><span>Go quiet when busy<small>Stops the chime and voice when this many tickets arrive within a minute</small></span>
       <select id="optRush"><option value="0">Never</option><option value="3">More than 3</option><option value="5">More than 5</option></select></label>
@@ -260,6 +264,8 @@
     <label class="opt" style="display:block"><span>Counter setting</span>
       <input id="optCounter" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" style="margin-top:8px"></label>
     <button id="testAlert" class="plain wide">Test the alarm</button>
+    <p class="sub">Music stopping? Play music, then try each of these to see which one stops it.</p>
+    <div class="row2"><button id="testChime" class="plain">Chime only</button><button id="testVoice" class="plain">Voice only</button></div>
   </details>
 
   <details>
@@ -273,14 +279,13 @@
     <pre id="log">—</pre>
   </details>
 
-  <p class="sub" style="text-align:center">Ticket Bell version 15</p>
+  <p class="sub" style="text-align:center">Ticket Bell version 16</p>
 </main>
 
-<div id="overlay" class="hidden" role="alertdialog" aria-live="assertive">
-  <div class="star">⭐</div>
-  <div id="ovWho" class="who"></div>
-  <div id="ovWhen" class="when"></div>
-  <div class="tap">Tap anywhere to stop</div>
+<div id="overlay" class="hidden" role="alert" aria-live="assertive">
+  <div class="bell">🔔</div>
+  <div class="txt"><div id="ovWho" class="who"></div><div id="ovWhen" class="when"></div></div>
+  <div class="x" aria-label="Close">✕</div>
 </div>
 
 <script>
@@ -1198,7 +1203,7 @@
     pollMs: 3000, counterVar: 'odometer.total_label_count'
   };
   var GAP_MS = 10000;      // quiet time between repeats of an announcement
-  var LINGER_MS = 3000;    // how long the alert stays up after the last one
+  var LINGER_MS = 1500;    // how long the banner stays after an announcement
   try { Object.assign(state, JSON.parse(localStorage.getItem('ticketbell') || '{}')); } catch (e) {}
   // Customers used to be plain names. Each is now a name plus the wordings to look for on the label.
   state.customers = (state.customers || []).map(function (c) {
@@ -1232,12 +1237,17 @@
   function primeVoice() {
     try { if (state.speak && window.speechSynthesis) speechSynthesis.speak(new SpeechSynthesisUtterance('')); } catch (e) {}
   }
-  function unlockSound() {
+  /** Gets the chime ready without touching the voice. Returns whether the music setting was accepted. */
+  function wakeChime() {
     var mixed = applyMix();
     try {
       audio = audio || new (window.AudioContext || window.webkitAudioContext)();
       audio.resume();
     } catch (e) {}
+    return mixed;
+  }
+  function unlockSound() {
+    var mixed = wakeChime();
     primeVoice();
     if (!soundNoted) {
       soundNoted = true;
@@ -1352,17 +1362,26 @@
   }
 
   // ---------- Alerts ----------
+  var bannerTimer = null;
+  function hideBanner() { clearTimeout(bannerTimer); $('overlay').classList.add('hidden'); }
   var announcer = new TB.Announcer({
-    play: playAnnouncement,
+    play: function (names, fresh) {
+      return playAnnouncement(names, fresh).then(function () {
+        // The banner leaves soon after the announcement. A repeat of the name is sound only.
+        clearTimeout(bannerTimer);
+        bannerTimer = setTimeout(hideBanner, LINGER_MS);
+      });
+    },
     // With the voice off there is nothing to repeat: one chime, then the alert closes.
     settings: function () { return { times: state.speak ? state.times : 1, gapMs: GAP_MS, lingerMs: LINGER_MS }; },
     onShow: function (names) {
       $('ovWho').textContent = names.join('\n');
       $('ovWho').classList.toggle('many', names.length > 2);
       $('ovWhen').textContent = (names.length > 1 ? 'Tickets printed, latest at ' : 'Ticket printed at ') + clock();
+      clearTimeout(bannerTimer);
       $('overlay').classList.remove('hidden');
     },
-    onDone: function () { $('overlay').classList.add('hidden'); }
+    onDone: hideBanner
   });
   function showVip(names) { announcer.add(names); }
   $('overlay').addEventListener('click', function () {
@@ -2064,6 +2083,23 @@
   $('newName').addEventListener('keydown', function (e) { if (e.key === 'Enter') $('newMatch').focus(); });
   $('newMatch').addEventListener('keydown', function (e) { if (e.key === 'Enter') addCustomer(); });
   $('testAlert').addEventListener('click', function () { unlockSound(); showVip(['Test Customer']); });
+  // Two sound checks that keep the chime and the voice apart, to find which one stops another app's music.
+  $('testChime').addEventListener('click', function () {
+    var mixed = wakeChime();
+    chime('pa');
+    log('Sound check: chime only (music setting ' + (mixed ? navigator.audioSession.type : 'not offered') + ')');
+  });
+  $('testVoice').addEventListener('click', function () {
+    try {
+      var u = new SpeechSynthesisUtterance('Attention please. Ticket for Test Customer.');
+      var v = pickVoice();
+      if (v) { u.voice = v; u.lang = v.lang; }
+      u.rate = state.rate; u.pitch = state.pitch;
+      speaking = u;
+      speechSynthesis.speak(u);
+      log('Sound check: voice only');
+    } catch (e) { log('Sound check: this browser has no voice'); }
+  });
 
   function bindCheck(id, key, after) {
     $(id).checked = !!state[key];
