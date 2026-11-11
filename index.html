@@ -1,0 +1,470 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Ticket Bell</title>
+<style>
+  :root {
+    --bg: #f4f5f7; --card: #ffffff; --text: #16181d; --muted: #667085; --line: #e3e6ec;
+    --accent: #2563eb; --good: #16803c; --bad: #c62828; --warn: #b45309; --star: #f5b301;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0e1014; --card: #191c22; --text: #f1f3f6; --muted: #98a2b3; --line: #2a2f38;
+            --accent: #5b9bff; --good: #4ade80; --bad: #ff6b6b; --warn: #fbbf24; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 17px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+         padding: 16px 16px calc(32px + env(safe-area-inset-bottom)); -webkit-text-size-adjust: 100%; }
+  main { max-width: 560px; margin: 0 auto; }
+  h1 { font-size: 26px; margin: 8px 0 14px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 0 0 10px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px; margin-bottom: 14px; }
+  .status { display: flex; align-items: center; gap: 12px; font-size: 19px; font-weight: 600; }
+  .dot { width: 14px; height: 14px; border-radius: 50%; background: var(--muted); flex: none; }
+  .dot.on { background: var(--good); box-shadow: 0 0 0 5px color-mix(in srgb, var(--good) 22%, transparent); }
+  .dot.lost { background: var(--bad); }
+  .dot.busy { background: var(--warn); }
+  .sub { color: var(--muted); font-size: 14px; margin-top: 8px; }
+  .sub.warn { color: var(--warn); }
+  button { font: inherit; border: 0; border-radius: 11px; padding: 13px 16px; background: var(--accent); color: #fff;
+           font-weight: 600; cursor: pointer; }
+  button.wide { width: 100%; margin-top: 14px; }
+  button.plain { background: transparent; color: var(--accent); border: 1px solid var(--line); }
+  button.small { padding: 8px 12px; font-size: 15px; }
+  button:disabled { opacity: .5; }
+  input[type=text] { font: inherit; width: 100%; padding: 12px; border-radius: 11px; border: 1px solid var(--line);
+                     background: var(--bg); color: var(--text); min-width: 0; }
+  .row { display: flex; gap: 8px; align-items: center; }
+  ul { list-style: none; margin: 10px 0 0; padding: 0; }
+  li { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 10px 0;
+       border-top: 1px solid var(--line); overflow-wrap: anywhere; }
+  li:first-child { border-top: 0; }
+  li .x { background: transparent; color: var(--muted); padding: 4px 10px; font-size: 20px; }
+  li time { color: var(--muted); font-size: 14px; flex: none; font-variant-numeric: tabular-nums; }
+  li.vip { font-weight: 700; }
+  .empty { color: var(--muted); font-size: 15px; margin: 6px 0 0; }
+  details { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; margin-bottom: 14px; }
+  summary { font-weight: 600; cursor: pointer; }
+  label.opt { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 11px 0;
+              border-top: 1px solid var(--line); }
+  label.opt:first-of-type { border-top: 0; margin-top: 8px; }
+  label.opt small { display: block; color: var(--muted); font-size: 13px; }
+  input[type=checkbox] { width: 24px; height: 24px; flex: none; accent-color: var(--accent); }
+  select { font: inherit; padding: 8px; border-radius: 9px; border: 1px solid var(--line); background: var(--bg); color: var(--text); }
+  pre { white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.45 ui-monospace, Menlo, Consolas, monospace;
+        background: var(--bg); border-radius: 9px; padding: 10px; max-height: 300px; overflow: auto; margin: 10px 0 0; }
+  .notice { border-color: var(--warn); }
+  .notice a { color: var(--accent); }
+  .hidden { display: none !important; }
+  #overlay { position: fixed; inset: 0; z-index: 10; display: flex; flex-direction: column; align-items: center;
+             justify-content: center; text-align: center; padding: 24px; background: #b45309; color: #fff;
+             animation: flash 1s steps(2, jump-none) infinite; }
+  @keyframes flash { from { background: #b45309; } to { background: #7c2d12; } }
+  @media (prefers-reduced-motion: reduce) { #overlay { animation: none; } }
+  #overlay .star { font-size: 72px; }
+  #overlay .who { font-size: 40px; font-weight: 800; line-height: 1.15; margin: 8px 0; overflow-wrap: anywhere; }
+  #overlay .when { font-size: 20px; opacity: .9; }
+  #overlay .tap { margin-top: 36px; font-size: 17px; opacity: .85; }
+</style>
+</head>
+<body>
+<main>
+  <h1>🎫 Ticket Bell</h1>
+
+  <div id="noBle" class="card notice hidden">
+    <strong>This browser can't use Bluetooth.</strong>
+    <p class="sub">On an iPhone, install the free <b>Bluefy</b> browser from the App Store and open this page in it.
+      Or <a href="?demo=1">try the demo</a> with a pretend printer.</p>
+  </div>
+
+  <div id="demoCard" class="card notice hidden">
+    <h2>Demo: pretend printer</h2>
+    <div class="row">
+      <input id="demoName" type="text" placeholder="Name printed on the ticket" autocomplete="off">
+      <button id="demoPrint" class="small">Print</button>
+    </div>
+    <p class="sub">Nothing here talks to a real printer. Connect below, add a customer, then print a ticket with that name.</p>
+  </div>
+
+  <div class="card">
+    <div class="status"><span id="dot" class="dot"></span><span id="status">Not connected</span></div>
+    <div id="reading" class="sub hidden"></div>
+    <div id="awake" class="sub hidden"></div>
+    <button id="connect" class="wide">Connect to printer</button>
+  </div>
+
+  <div class="card">
+    <h2>Customers to watch</h2>
+    <div class="row">
+      <input id="newName" type="text" placeholder="Customer name" autocomplete="off" autocapitalize="words" enterkeyhint="done">
+      <button id="addName" class="small">Add</button>
+    </div>
+    <ul id="customers"></ul>
+    <p id="noCustomers" class="empty">No customers yet. Type the name the way it's printed on the ticket.</p>
+  </div>
+
+  <div class="card">
+    <h2>Recent tickets</h2>
+    <ul id="tickets"></ul>
+    <p id="noTickets" class="empty">Nothing printed yet.</p>
+  </div>
+
+  <details>
+    <summary>Settings</summary>
+    <label class="opt"><span>Alert for other tickets<small>A short beep when a ticket isn't for a watched customer</small></span>
+      <input id="optOthers" type="checkbox"></label>
+    <label class="opt"><span>Say the name out loud</span><input id="optSpeak" type="checkbox"></label>
+    <label class="opt"><span>Repeat alarm until I tap<small>For watched customers</small></span>
+      <input id="optRepeat" type="checkbox"></label>
+    <label class="opt"><span>Read ticket contents<small>Needed to recognise customer names</small></span>
+      <input id="optRead" type="checkbox"></label>
+    <label class="opt"><span>Check every</span>
+      <select id="optPoll"><option value="2000">2 seconds</option><option value="3000">3 seconds</option>
+        <option value="5000">5 seconds</option><option value="10000">10 seconds</option></select></label>
+    <label class="opt" style="display:block"><span>Counter setting</span>
+      <input id="optCounter" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" style="margin-top:8px"></label>
+    <button id="testAlert" class="plain wide">Test the alarm</button>
+  </details>
+
+  <details>
+    <summary>Last ticket data</summary>
+    <p id="lastNote" class="sub">No ticket read yet.</p>
+    <pre id="lastText">—</pre>
+  </details>
+
+  <details>
+    <summary>Log</summary>
+    <pre id="log">—</pre>
+  </details>
+</main>
+
+<div id="overlay" class="hidden" role="alertdialog" aria-live="assertive">
+  <div class="star">⭐</div>
+  <div id="ovWho" class="who"></div>
+  <div id="ovWhen" class="when"></div>
+  <div class="tap">Tap anywhere to dismiss</div>
+</div>
+
+<script src="ticketbell.js"></script>
+<script>
+(function () {
+  'use strict';
+  var TB = window.TicketBell;
+  var $ = function (id) { return document.getElementById(id); };
+  var SERVICE = '38eb4a80-c570-11e3-9507-0002a5d5c51b';
+  var FROM_PRINTER = '38eb4a81-c570-11e3-9507-0002a5d5c51b';
+  var TO_PRINTER = '38eb4a82-c570-11e3-9507-0002a5d5c51b';
+  var DEMO = /[?&]demo=1/.test(location.search);
+
+  // ---------- Saved settings ----------
+  var state = {
+    customers: [], notifyOthers: true, speak: true, repeat: true, readTickets: true,
+    pollMs: 3000, counterVar: 'odometer.total_label_count'
+  };
+  try { Object.assign(state, JSON.parse(localStorage.getItem('ticketbell') || '{}')); } catch (e) {}
+  function save() { try { localStorage.setItem('ticketbell', JSON.stringify(state)); } catch (e) {} }
+
+  var tickets = [];
+  var logLines = [];
+  function clock() { return new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); }
+  function log(text) {
+    logLines.unshift(clock() + '  ' + text);
+    logLines.length = Math.min(logLines.length, 60);
+    $('log').textContent = logLines.join('\n');
+  }
+
+  // ---------- Sound ----------
+  var audio = null, repeatTimer = null;
+  function unlockSound() {
+    try {
+      audio = audio || new (window.AudioContext || window.webkitAudioContext)();
+      audio.resume();
+      if (window.speechSynthesis) speechSynthesis.speak(new SpeechSynthesisUtterance(''));
+    } catch (e) {}
+  }
+  function tone(freq, at, dur, vol) {
+    var o = audio.createOscillator(), g = audio.createGain();
+    o.frequency.value = freq;
+    g.gain.setValueAtTime(0.0001, at);
+    g.gain.linearRampToValueAtTime(vol, at + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, at + dur);
+    o.connect(g); g.connect(audio.destination);
+    o.start(at); o.stop(at + dur + 0.05);
+  }
+  function chime(kind) {
+    if (!audio) return;
+    var t = audio.currentTime + 0.05;
+    if (kind === 'vip') {
+      [0, 0.8, 1.6].forEach(function (off) {
+        [880, 1109, 1319].forEach(function (f, i) { tone(f, t + off + i * 0.14, 0.5, 0.9); });
+      });
+    } else if (kind === 'lost') {
+      tone(330, t, 0.35, 0.6); tone(247, t + 0.4, 0.5, 0.6);
+    } else {
+      tone(660, t, 0.35, 0.5);
+    }
+  }
+  function say(text, delayMs) {
+    if (!state.speak || !window.speechSynthesis) return;
+    setTimeout(function () { try { speechSynthesis.speak(new SpeechSynthesisUtterance(text)); } catch (e) {} }, delayMs);
+  }
+
+  // ---------- Alerts ----------
+  function showVip(names) {
+    var who = names.join(', ');
+    $('ovWho').textContent = who;
+    $('ovWhen').textContent = 'Ticket printed at ' + clock();
+    $('overlay').classList.remove('hidden');
+    chime('vip');
+    say('Ticket for ' + who, 2500);
+    clearInterval(repeatTimer);
+    if (state.repeat) {
+      repeatTimer = setInterval(function () { chime('vip'); say('Ticket for ' + who, 2500); }, 8000);
+    }
+  }
+  $('overlay').addEventListener('click', function () {
+    clearInterval(repeatTimer);
+    $('overlay').classList.add('hidden');
+  });
+
+  function onTicket(e) {
+    var vip = e.matches.length > 0;
+    tickets.unshift({ time: clock(), label: vip ? '⭐ ' + e.matches.join(', ') : 'Other ticket', vip: vip });
+    tickets.length = Math.min(tickets.length, 30);
+    renderTickets();
+
+    if (!state.readTickets) $('lastNote').textContent = 'Ticket reading is off.';
+    else if (vip) $('lastNote').textContent = 'Matched: ' + e.matches.join(', ');
+    else if (e.isImage) $('lastNote').textContent = 'This ticket was sent as a picture, so names can\'t be read from it.';
+    else if (!e.read) $('lastNote').textContent = 'The printer had no saved copy of this ticket.';
+    else $('lastNote').textContent = 'No watched customer on this ticket.';
+    $('lastText').textContent = (e.isImage ? e.raw : e.text) || '—';
+
+    if (vip) { log('Customer ticket: ' + e.matches.join(', ')); showVip(e.matches); }
+    else if (state.notifyOthers) { chime('other'); say('Ticket printed', 500); }
+  }
+
+  // ---------- Monitor ----------
+  var monitor = new TB.Monitor({
+    settings: function () { return state; },
+    onEvent: function (e) {
+      if (e.type === 'log') log(e.text);
+      else if (e.type === 'ticket') onTicket(e);
+      else if (e.type === 'reading') {
+        $('reading').textContent = 'Counter reading: ' + e.value;
+        $('reading').classList.remove('hidden');
+      }
+    }
+  });
+
+  // ---------- Bluetooth ----------
+  var device = null, txChar = null, wanted = false, connected = false, retrying = false, queue = Promise.resolve();
+  var decoder = new TextDecoder();
+  var encoder = new TextEncoder();
+  var printerName = 'printer';
+
+  var bleTransport = {
+    onData: null,
+    send: function (text) {
+      var bytes = encoder.encode(text);
+      queue = queue.catch(function () {}).then(async function () {
+        if (!txChar) throw new Error('not connected');
+        for (var i = 0; i < bytes.length; i += 20) {
+          var chunk = bytes.slice(i, i + 20);
+          if (txChar.properties.write && txChar.writeValueWithResponse) await txChar.writeValueWithResponse(chunk);
+          else if (txChar.properties.writeWithoutResponse && txChar.writeValueWithoutResponse) await txChar.writeValueWithoutResponse(chunk);
+          else await txChar.writeValue(chunk);
+        }
+      });
+      return queue;
+    }
+  };
+
+  function setStatus(kind, text) {
+    $('dot').className = 'dot' + (kind ? ' ' + kind : '');
+    $('status').textContent = text;
+    $('connect').textContent = wanted ? 'Disconnect' : 'Connect to printer';
+  }
+
+  async function openGatt() {
+    var server = await device.gatt.connect();
+    var service = await server.getPrimaryService(SERVICE);
+    var rx = await service.getCharacteristic(FROM_PRINTER);
+    txChar = await service.getCharacteristic(TO_PRINTER);
+    rx.addEventListener('characteristicvaluechanged', function (ev) {
+      if (bleTransport.onData) bleTransport.onData(decoder.decode(ev.target.value, { stream: true }));
+    });
+    await rx.startNotifications();
+  }
+
+  function nowWatching() {
+    connected = true;
+    setStatus('on', 'Watching ' + printerName + ' for tickets');
+    log('Connected to ' + printerName);
+    monitor.start();
+  }
+
+  async function connect() {
+    unlockSound();
+    keepAwake();
+    if (DEMO) {
+      wanted = true; printerName = 'the pretend printer';
+      monitor.attach(demoPrinter);
+      nowWatching();
+      return;
+    }
+    try {
+      setStatus('busy', 'Choose your printer…');
+      var picked = await navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: [SERVICE] });
+      if (device && picked.id !== device.id) monitor.reset();
+      device = picked;
+      printerName = device.name || 'printer';
+      device.addEventListener('gattserverdisconnected', onDisconnected);
+      wanted = true;
+      setStatus('busy', 'Connecting to ' + printerName + '…');
+      await openGatt();
+      monitor.attach(bleTransport);
+      nowWatching();
+    } catch (e) {
+      wanted = false;
+      var msg = String(e && e.message || e);
+      if (/cancel/i.test(msg)) setStatus('', 'Not connected');
+      else if (/service/i.test(msg)) setStatus('lost', 'That device isn\'t a Zebra printer. Try another one.');
+      else setStatus('lost', 'Couldn\'t connect. Try again.');
+      log('Connect failed: ' + msg);
+    }
+  }
+
+  function disconnect() {
+    wanted = false; connected = false;
+    monitor.stop();
+    try { if (device && device.gatt.connected) device.gatt.disconnect(); } catch (e) {}
+    txChar = null;
+    setStatus('', 'Not connected');
+  }
+
+  function onDisconnected() {
+    if (!wanted) return;
+    var was = connected;
+    connected = false; txChar = null;
+    monitor.stop();
+    setStatus('lost', 'Printer disconnected. Reconnecting…');
+    if (was) { log('Printer disconnected'); chime('lost'); say('Printer disconnected', 1000); }
+    reconnect();
+  }
+
+  async function reconnect() {
+    if (retrying) return;
+    retrying = true;
+    while (wanted && !connected) {
+      try {
+        await openGatt();
+        nowWatching();
+      } catch (e) {
+        await new Promise(function (r) { setTimeout(r, 5000); });
+      }
+    }
+    retrying = false;
+  }
+
+  // ---------- Keep the screen on ----------
+  var wakeLock = null;
+  async function keepAwake() {
+    var el = $('awake');
+    el.classList.remove('hidden');
+    try {
+      if (!('wakeLock' in navigator)) throw new Error('unsupported');
+      wakeLock = await navigator.wakeLock.request('screen');
+      el.className = 'sub';
+      el.textContent = 'Screen will stay on. Keep this page open and the phone charging.';
+    } catch (e) {
+      el.className = 'sub warn';
+      el.textContent = 'Keep this page open. To stop the screen locking, set Settings › Display & Brightness › Auto-Lock to Never.';
+    }
+  }
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState !== 'visible' || !wanted) return;
+    keepAwake();
+    if (!DEMO && device && !device.gatt.connected) onDisconnected();
+  });
+
+  // ---------- Lists ----------
+  function renderCustomers() {
+    var ul = $('customers');
+    ul.textContent = '';
+    state.customers.forEach(function (name, i) {
+      var li = document.createElement('li');
+      var span = document.createElement('span');
+      span.textContent = name;
+      var x = document.createElement('button');
+      x.className = 'x'; x.textContent = '×'; x.setAttribute('aria-label', 'Remove ' + name);
+      x.addEventListener('click', function () { state.customers.splice(i, 1); save(); renderCustomers(); });
+      li.appendChild(span); li.appendChild(x); ul.appendChild(li);
+    });
+    $('noCustomers').classList.toggle('hidden', state.customers.length > 0);
+  }
+  function renderTickets() {
+    var ul = $('tickets');
+    ul.textContent = '';
+    tickets.forEach(function (t) {
+      var li = document.createElement('li');
+      if (t.vip) li.className = 'vip';
+      var span = document.createElement('span'); span.textContent = t.label;
+      var time = document.createElement('time'); time.textContent = t.time;
+      li.appendChild(span); li.appendChild(time); ul.appendChild(li);
+    });
+    $('noTickets').classList.toggle('hidden', tickets.length > 0);
+  }
+  function addCustomer() {
+    var name = $('newName').value.trim();
+    var exists = state.customers.some(function (c) { return TB.normalize(c) === TB.normalize(name); });
+    if (name && !exists) { state.customers.push(name); save(); renderCustomers(); }
+    $('newName').value = '';
+  }
+
+  // ---------- Wiring ----------
+  $('connect').addEventListener('click', function () { if (wanted) disconnect(); else connect(); });
+  $('addName').addEventListener('click', addCustomer);
+  $('newName').addEventListener('keydown', function (e) { if (e.key === 'Enter') addCustomer(); });
+  $('testAlert').addEventListener('click', function () { unlockSound(); showVip(['Test Customer']); });
+
+  function bindCheck(id, key, after) {
+    $(id).checked = !!state[key];
+    $(id).addEventListener('change', function () { state[key] = $(id).checked; save(); if (after) after(); });
+  }
+  bindCheck('optOthers', 'notifyOthers');
+  bindCheck('optSpeak', 'speak');
+  bindCheck('optRepeat', 'repeat');
+  bindCheck('optRead', 'readTickets', function () { monitor.applyCapture(); });
+  $('optPoll').value = String(state.pollMs);
+  $('optPoll').addEventListener('change', function () { state.pollMs = Number($('optPoll').value); save(); });
+  $('optCounter').value = state.counterVar;
+  $('optCounter').addEventListener('change', function () {
+    state.counterVar = $('optCounter').value.trim() || 'odometer.total_label_count';
+    $('optCounter').value = state.counterVar;
+    monitor.reset(); save();
+  });
+
+  var demoPrinter = null;
+  if (DEMO) {
+    demoPrinter = new TB.FakePrinter();
+    $('demoCard').classList.remove('hidden');
+    $('demoPrint').addEventListener('click', function () {
+      var name = $('demoName').value.trim() || 'Walk-in';
+      demoPrinter.print('^XA^FO40,40^FDOrder ' + (demoPrinter.count + 1) + '^FS^FO40,100^FD' + name + '^FS^XZ');
+      log('Pretend printer printed a ticket for ' + name);
+    });
+  } else if (!navigator.bluetooth) {
+    $('noBle').classList.remove('hidden');
+    $('connect').disabled = true;
+  }
+
+  renderCustomers();
+  renderTickets();
+})();
+</script>
+</body>
+</html>
