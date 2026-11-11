@@ -28,6 +28,14 @@
   .dot.lost { background: var(--bad); }
   .dot.busy { background: var(--warn); }
   .sub { color: var(--muted); font-size: 14px; margin-top: 8px; }
+  .odo { display: inline-flex; gap: 3px; margin-top: 14px; padding: 6px; background: #0b0c0f; border-radius: 10px;
+         border: 1px solid #2a2f38; }
+  .odo .digit { width: 30px; height: 44px; overflow: hidden; border-radius: 5px; color: #fff; text-align: center;
+                background: linear-gradient(#34383f, #15171b 50%, #34383f);
+                font: 700 28px/44px ui-monospace, Menlo, Consolas, monospace; }
+  .odo .strip { display: flex; flex-direction: column; transition: transform .7s cubic-bezier(.2, .8, .2, 1); }
+  .odo .strip span { display: block; height: 44px; }
+  @media (prefers-reduced-motion: reduce) { .odo .strip { transition: none; } }
   .sub.warn { color: var(--warn); }
   button { font: inherit; border: 0; border-radius: 11px; padding: 13px 16px; background: var(--accent); color: #fff;
            font-weight: 600; cursor: pointer; }
@@ -104,7 +112,12 @@
 
   <div class="card">
     <div class="status"><span id="dot" class="dot"></span><span id="status">Not connected</span></div>
+    <div id="odoWrap" class="hidden">
+      <div id="odo" class="odo" role="img"></div>
+      <div class="sub">Labels this printer has printed, all time</div>
+    </div>
     <div id="reading" class="sub hidden"></div>
+    <div id="today" class="sub hidden"></div>
     <div id="awake" class="sub hidden"></div>
     <button id="connect" class="wide">Connect to printer</button>
   </div>
@@ -163,7 +176,7 @@
     <pre id="log">—</pre>
   </details>
 
-  <p class="sub" style="text-align:center">Ticket Bell version 4</p>
+  <p class="sub" style="text-align:center">Ticket Bell version 5</p>
 </main>
 
 <div id="overlay" class="hidden" role="alertdialog" aria-live="assertive">
@@ -718,8 +731,59 @@
     announcer.dismiss();
   });
 
+  // ---------- Odometer and today's tally ----------
+  var odoStrips = [];
+  function setOdometer(n) {
+    var s = String(n);
+    while (s.length < 6) s = '0' + s;
+    var box = $('odo');
+    if (odoStrips.length !== s.length) {
+      box.textContent = '';
+      odoStrips = [];
+      for (var i = 0; i < s.length; i++) {
+        var digit = document.createElement('span');
+        digit.className = 'digit';
+        var strip = document.createElement('span');
+        strip.className = 'strip';
+        for (var d = 0; d < 10; d++) {
+          var cell = document.createElement('span');
+          cell.textContent = String(d);
+          strip.appendChild(cell);
+        }
+        digit.appendChild(strip);
+        box.appendChild(digit);
+        odoStrips.push(strip);
+      }
+    }
+    for (var k = 0; k < s.length; k++) {
+      odoStrips[k].style.transform = 'translateY(-' + (Number(s[k]) * 10) + '%)';   // each digit is a tenth of the strip
+    }
+    box.setAttribute('aria-label', 'Printer label counter: ' + n);
+    $('odoWrap').classList.remove('hidden');
+  }
+
+  function todayKey() { var d = new Date(); return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate(); }
+  var tally = { date: todayKey(), tickets: 0, watched: 0 };
+  try {
+    var savedTally = JSON.parse(localStorage.getItem('ticketbell-today') || 'null');
+    if (savedTally && savedTally.date === tally.date) tally = savedTally;
+  } catch (e) {}
+  function renderTally() {
+    $('today').textContent = 'Today: ' + tally.tickets + (tally.tickets === 1 ? ' ticket' : ' tickets') +
+      ', ' + tally.watched + ' for watched customers';
+    $('today').classList.toggle('hidden', tally.tickets === 0);
+  }
+  function countTicket(watched) {
+    if (tally.date !== todayKey()) tally = { date: todayKey(), tickets: 0, watched: 0 };
+    tally.tickets++;
+    if (watched) tally.watched++;
+    try { localStorage.setItem('ticketbell-today', JSON.stringify(tally)); } catch (e) {}
+    renderTally();
+  }
+
   function onTicket(e) {
     var vip = e.matches.length > 0;
+    countTicket(vip);
     tickets.unshift({ time: clock(), label: vip ? '⭐ ' + e.matches.join(', ') : 'Other ticket', vip: vip });
     tickets.length = Math.min(tickets.length, 30);
     renderTickets();
@@ -747,8 +811,15 @@
       if (e.type === 'log') log(e.text);
       else if (e.type === 'ticket') onTicket(e);
       else if (e.type === 'reading') {
-        $('reading').textContent = 'Counter reading: ' + e.value;
-        $('reading').classList.remove('hidden');
+        var m = /^\s*(\d[\d,]*)/.exec(e.value);
+        if (m) {
+          setOdometer(parseInt(m[1].replace(/,/g, ''), 10));
+          $('reading').classList.add('hidden');
+        } else {
+          $('odoWrap').classList.add('hidden');
+          $('reading').textContent = 'Counter reading: ' + e.value;
+          $('reading').classList.remove('hidden');
+        }
       }
     }
   });
@@ -967,6 +1038,7 @@
 
   renderCustomers();
   renderTickets();
+  renderTally();
 })();
 </script>
 </body>
