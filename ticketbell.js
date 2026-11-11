@@ -180,6 +180,18 @@
    *    printer's free memory gets low. Capture also switches itself off when the printer restarts.
    * Nothing else on the printer is changed.
    */
+  var LIST_FILES = '! U1 do "file.dir" "E:"\r\n';
+  /** Sizes of the capture files in a file listing, by name. Empty if the listing gives no sizes. */
+  function fileSizes(listing) {
+    var sizes = {}, m, re = /(IN\d{3}\.DMP)\s+(\d+)/gi;
+    while ((m = re.exec(String(listing)))) sizes[m[1].toUpperCase()] = parseInt(m[2], 10);
+    return sizes;
+  }
+  function freeBytes(listing) {
+    var m = /(\d+)\s+bytes\s+free/i.exec(String(listing));
+    return m ? parseInt(m[1], 10) : null;
+  }
+
   var CAPTURE_ON = '! U1 setvar "input.capture" "run"\r\n';
   var CAPTURE_OFF = '! U1 setvar "input.capture" "off"\r\n';
   var DELETE_ALL = '! U1 do "file.delete" "E:IN*.DMP"\r\n';
@@ -195,7 +207,11 @@
     this.lowMemoryBytes = opts.lowMemoryBytes || 2000000;   // stop reading tickets below this much free memory
     this.tidyBytes = opts.tidyBytes || 200000;              // clear the copies once they pass this size
     this.lastFullTidy = Date.now();
-    this.captureBlocked = false;   // set when the printer's memory got low
+    this.bigLabelBytes = opts.bigLabelBytes || 300000;      // a label bigger than this counts as unreadable
+    this.captureBlocked = false;   // set by a safety stop
+    this.paused = false;           // set while the page is out of sight
+    this.deleteFailures = 0;
+    this.unreadable = 0;
     this.staleSeen = false;
     this.hasErrors = false;
     this.healthKey = null;
@@ -262,7 +278,7 @@
 
   Monitor.prototype.applyCapture = function (clearFirst) {
     if (!this.running) return;
-    var on = this.settings().readTickets && !this.captureBlocked;
+    var on = this.capturing();
     if (!on || clearFirst) {
       this.send(CAPTURE_OFF);
       this.send(DELETE_ALL);
@@ -272,7 +288,11 @@
   };
 
   /** The user switched ticket reading back on: allow it again even after a low-memory stop. */
-  Monitor.prototype.allowCapture = function () { this.captureBlocked = false; };
+  Monitor.prototype.allowCapture = function () {
+    this.captureBlocked = false;
+    this.deleteFailures = 0;
+    this.unreadable = 0;
+  };
 
   Monitor.prototype.log = function (text) { this.emit({ type: 'log', text: text }); };
 
@@ -294,8 +314,7 @@
   Monitor.prototype.poll = function () {
     var s = this.settings();
     if (!this.busy) {
-      var capturing = s.readTickets && !this.captureBlocked;
-      var tidyDue = capturing && !this.jobT && this.pending === 0 &&
+      var tidyDue = this.capturing() && !this.jobT && this.pending === 0 &&
         Date.now() - this.lastTidy > this.timing.tidyMs;
       if (tidyDue) {
         this.readCaptured(true);
@@ -373,8 +392,8 @@
     var count = this.pending;
     this.pending = 0;
     this.log('Ticket printed (counter +' + count + ')');
-    if (!this.settings().readTickets || this.captureBlocked) {
-      this.emit({ type: 'ticket', matches: [], text: '', raw: '', isImage: false, read: false });
+    if (!this.capturing()) {
+      this.emit({ type: 'ticket', matches: [], text: '', raw: '', isImage: false, read: false, size: 0 });
       return Promise.resolve();
     }
     return this.readCaptured(false).then(function (done) {
@@ -394,18 +413,20 @@
     var raw = '';
     var free = null;
     var skipRead = false;
-    return this.requestRaw('! U1 do "file.dir" "E:"\r\n')
+    var sizesBefore = {};
+    return this.requestRaw(LIST_FILES)
       .then(function (listing) {
         files = captureFiles(listing);
-        var fm = /(\d+)\s+bytes\s+free/i.exec(listing);
-        if (fm) { free = parseInt(fm[1], 10); self.emit({ type: 'memory', free: free }); }
+        sizesBefore = fileSizes(listing);
+        free = freeBytes(listing);
+        if (free !== null) self.emit({ type: 'memory', free: free });
         if (tidy) {
           // A routine check only looks at the list. The copies are read and cleared only once they
           // have grown, which keeps the printer's workload low and makes it very unlikely that a
           // clean-up lands on the same second as an arriving ticket.
-          var sizes = [], sm, sizeRe = /IN\d{3}\.DMP\s+(\d+)/gi;
-          while ((sm = sizeRe.exec(listing))) sizes.push(parseInt(sm[1], 10));
-          var total = sizes.length === files.length ? sizes.reduce(function (a, b) { return a + b; }, 0) : null;
+          var known = Object.keys(sizesBefore);
+          var total = known.length === files.length
+            ? known.reduce(function (sum, name) { return sum + sizesBefore[name]; }, 0) : null;
           var grown = total !== null ? total > self.tidyBytes
                                      : Date.now() - self.lastFullTidy > self.timing.fullTidyMs;
           if (!grown && !self.staleSeen) { skipRead = true; return; }
@@ -433,28 +454,87 @@
         return files.reduce(function (p, f) {
           return p.then(function () { return self.send('! U1 do "file.delete" "E:' + f + '"\r\n'); });
         }, Promise.resolve()).then(function () {
-          self.checkMemory(free);
           if (!tidy) {
+            var data = stripOwnCommands(raw).trim();
             self.emit({
               type: 'ticket', matches: res.matches, text: res.text, isImage: res.isImage,
-              raw: stripOwnCommands(raw).trim().slice(0, 20000), read: files.length > 0 && res.hasJobData
+              raw: data.slice(0, 20000), read: files.length > 0 && res.hasJobData, size: data.length
             });
+            self.noteReadability(res, data.length);
           }
-          return true;
-        });
+          // The alert has gone out; now confirm the printer really deleted the copies.
+          return self.verifyCleanup(sizesBefore, free);
+        }).then(function () { return true; });
       })
       .then(function (done) { self.rx = ''; self.busy = false; return done; },
             function (e) { self.rx = ''; self.busy = false; self.log('Read failed: ' + e); return false; });
   };
 
-  /** Safety stop: never let ticket copies fill the printer. */
-  Monitor.prototype.checkMemory = function (free) {
-    if (free === null || free >= this.lowMemoryBytes || this.captureBlocked) return;
-    if (!this.settings().readTickets) return;
+  /** Switches ticket reading off for good (until the user turns it back on) and says why. */
+  Monitor.prototype.stopReading = function (reason, free) {
+    if (this.captureBlocked) return;
     this.captureBlocked = true;
     this.send(CAPTURE_OFF);
     this.send(DELETE_ALL);
-    this.emit({ type: 'lowmemory', free: free });
+    this.emit({ type: 'readingstopped', reason: reason, free: free === undefined ? null : free });
+  };
+
+  /** Safety stop: never let ticket copies fill the printer. */
+  Monitor.prototype.checkMemory = function (free) {
+    if (free === null || free >= this.lowMemoryBytes) return;
+    if (!this.settings().readTickets) return;
+    this.stopReading('memory', free);
+  };
+
+  /**
+   * Safety stop: after deleting, look at the list again. If the copies are still there at full size
+   * twice in a row, the printer isn't deleting them, so stop making more.
+   */
+  Monitor.prototype.verifyCleanup = function (before, freeBefore) {
+    var self = this;
+    var names = Object.keys(before);
+    if (!names.length || !this.running) { this.checkMemory(freeBefore); return Promise.resolve(); }
+    return this.requestRaw(LIST_FILES).then(function (listing) {
+      if (!self.running) return;
+      var after = fileSizes(listing);
+      var free = freeBytes(listing);
+      if (free !== null) self.emit({ type: 'memory', free: free });
+      var stuck = names.some(function (n) { return after[n] !== undefined && after[n] >= before[n]; });
+      self.deleteFailures = stuck ? self.deleteFailures + 1 : 0;
+      if (self.deleteFailures >= 2) self.stopReading('cleanup', free);
+      self.checkMemory(free === null ? freeBefore : free);
+    });
+  };
+
+  /**
+   * Safety stop: labels sent as pictures (or very large ones) can't be read for names, and they are
+   * the copies that would use the most memory. After three in a row, stop keeping copies.
+   */
+  Monitor.prototype.noteReadability = function (res, size) {
+    if (!res.hasJobData) return;
+    if (res.isImage || size > this.bigLabelBytes) this.unreadable++;
+    else this.unreadable = 0;
+    if (this.unreadable >= 3) this.stopReading('pictures');
+  };
+
+  /** True while the printer is being asked to keep copies of tickets. */
+  Monitor.prototype.capturing = function () {
+    return !!this.settings().readTickets && !this.captureBlocked && !this.paused;
+  };
+
+  /** The page is going out of sight (phone locked, another app): stop keeping copies until it is back. */
+  Monitor.prototype.pause = function () {
+    var self = this;
+    if (this.paused) return Promise.resolve();
+    this.paused = true;
+    if (!this.running) return Promise.resolve();
+    return this.send(CAPTURE_OFF).then(function () { return self.send(DELETE_ALL); });
+  };
+
+  Monitor.prototype.resume = function () {
+    if (!this.paused) return;
+    this.paused = false;
+    if (this.running) this.applyCapture(false);
   };
 
   Monitor.prototype.requestRaw = function (command) {
@@ -547,6 +627,31 @@
     this.onDone();
   };
 
+  // ---------- Going quiet in a rush ----------
+
+  /**
+   * Counts jobs in a sliding window. When more than `limit` arrive within `windowMs`, it reports
+   * "quiet" and stays quiet until a full window has passed with no new job.
+   * opts.settings(): { limit (0 = never go quiet), windowMs }
+   */
+  function RushGuard(opts) {
+    this.settings = opts.settings;
+    this.times = [];
+    this.quietUntil = 0;
+  }
+
+  RushGuard.prototype.isQuiet = function (now) { return now < this.quietUntil; };
+
+  /** Record `jobs` new jobs at time `now`. Returns true if alerts should stay silent. */
+  RushGuard.prototype.note = function (now, jobs) {
+    var s = this.settings();
+    if (!s.limit) { this.times = []; this.quietUntil = 0; return false; }
+    for (var i = 0; i < Math.max(1, jobs || 1); i++) this.times.push(now);
+    this.times = this.times.filter(function (t) { return now - t < s.windowMs; });
+    if (this.times.length > s.limit || this.isQuiet(now)) this.quietUntil = now + s.windowMs;
+    return this.isQuiet(now);
+  };
+
   // ---------- Pretend printer, for the demo and the tests ----------
 
   /** Behaves like the ZD421 as far as this page can tell, including capturing our own commands. */
@@ -586,6 +691,8 @@
         self.reply(out + '- ' + self.freeBytes() + ' bytes free E: ONBOARD FLASH\r\n');
       } else if ((m = /do "file\.type" "E:([^"]+)"/.exec(line))) {
         self.reply(self.files[m[1]] || '');
+      } else if (self.deleteBroken && /do "file\.delete"/.test(line)) {
+        // pretend the printer ignores delete commands
       } else if ((m = /do "file\.delete" "E:([^"]+)"/.exec(line))) {
         var pattern = new RegExp('^' + m[1].replace(/\./g, '\\.').replace(/\*/g, '.*') + '$');
         Object.keys(self.files).forEach(function (f) { if (pattern.test(f)) delete self.files[f]; });
@@ -624,7 +731,7 @@
     normalize: normalize, analyze: analyze, captureFiles: captureFiles,
     stripOwnCommands: stripOwnCommands, parseStatus: parseStatus,
     newHistory: newHistory, recordTicket: recordTicket, pruneHistory: pruneHistory, historyStats: historyStats,
-    dayKey: dayKey, Monitor: Monitor, Announcer: Announcer, FakePrinter: FakePrinter
+    dayKey: dayKey, Monitor: Monitor, Announcer: Announcer, RushGuard: RushGuard, FakePrinter: FakePrinter
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.TicketBell = api;

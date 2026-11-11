@@ -138,6 +138,8 @@
 
   <div id="health" class="card problem hidden" role="alert"></div>
   <div id="memWarn" class="card problem hidden" role="alert"></div>
+  <div id="leftOn" class="card notice hidden" role="status"></div>
+  <div id="busy" class="card notice hidden" role="status"></div>
 
   <div id="noBle" class="card notice hidden">
     <strong>This browser can't use Bluetooth.</strong>
@@ -232,6 +234,8 @@
       <input id="optIntercom" type="checkbox"></label>
     <label class="opt"><span>Announce each customer<small>10 seconds apart, then the alert closes by itself</small></span>
       <select id="optTimes"><option value="1">Once</option><option value="2">Twice</option><option value="3">3 times</option></select></label>
+    <label class="opt"><span>Go quiet when busy<small>Stops the chime and voice when this many tickets arrive within a minute</small></span>
+      <select id="optRush"><option value="0">Never</option><option value="3">More than 3</option><option value="5">More than 5</option></select></label>
     <label class="opt"><span>Voice type</span>
       <select id="optVoice" style="max-width:55%"><option value="">Automatic (deep)</option></select></label>
     <label class="opt" style="display:block"><span>Voice speed</span>
@@ -240,6 +244,8 @@
       <input id="optPitch" type="range" min="0.1" max="1.5" step="0.05" style="width:100%;margin-top:8px"></label>
     <label class="opt"><span>Read ticket contents<small>Needed to recognise names. The printer keeps a short-lived copy of each ticket, which this page deletes.</small></span>
       <input id="optRead" type="checkbox"></label>
+    <label class="opt"><span>Stop keeping copies when the page is hidden<small>Safer for the printer. Labels printed while the phone is locked or in another app are announced without names.</small></span>
+      <input id="optPause" type="checkbox"></label>
     <label class="opt"><span>Printer problem alerts<small>Out of labels, lid open and similar</small></span>
       <input id="optHealth" type="checkbox"></label>
     <label class="opt"><span>Check every</span>
@@ -261,7 +267,7 @@
     <pre id="log">—</pre>
   </details>
 
-  <p class="sub" style="text-align:center">Ticket Bell version 8</p>
+  <p class="sub" style="text-align:center">Ticket Bell version 10</p>
 </main>
 
 <div id="overlay" class="hidden" role="alertdialog" aria-live="assertive">
@@ -454,6 +460,18 @@
    *    printer's free memory gets low. Capture also switches itself off when the printer restarts.
    * Nothing else on the printer is changed.
    */
+  var LIST_FILES = '! U1 do "file.dir" "E:"\r\n';
+  /** Sizes of the capture files in a file listing, by name. Empty if the listing gives no sizes. */
+  function fileSizes(listing) {
+    var sizes = {}, m, re = /(IN\d{3}\.DMP)\s+(\d+)/gi;
+    while ((m = re.exec(String(listing)))) sizes[m[1].toUpperCase()] = parseInt(m[2], 10);
+    return sizes;
+  }
+  function freeBytes(listing) {
+    var m = /(\d+)\s+bytes\s+free/i.exec(String(listing));
+    return m ? parseInt(m[1], 10) : null;
+  }
+
   var CAPTURE_ON = '! U1 setvar "input.capture" "run"\r\n';
   var CAPTURE_OFF = '! U1 setvar "input.capture" "off"\r\n';
   var DELETE_ALL = '! U1 do "file.delete" "E:IN*.DMP"\r\n';
@@ -469,7 +487,11 @@
     this.lowMemoryBytes = opts.lowMemoryBytes || 2000000;   // stop reading tickets below this much free memory
     this.tidyBytes = opts.tidyBytes || 200000;              // clear the copies once they pass this size
     this.lastFullTidy = Date.now();
-    this.captureBlocked = false;   // set when the printer's memory got low
+    this.bigLabelBytes = opts.bigLabelBytes || 300000;      // a label bigger than this counts as unreadable
+    this.captureBlocked = false;   // set by a safety stop
+    this.paused = false;           // set while the page is out of sight
+    this.deleteFailures = 0;
+    this.unreadable = 0;
     this.staleSeen = false;
     this.hasErrors = false;
     this.healthKey = null;
@@ -536,7 +558,7 @@
 
   Monitor.prototype.applyCapture = function (clearFirst) {
     if (!this.running) return;
-    var on = this.settings().readTickets && !this.captureBlocked;
+    var on = this.capturing();
     if (!on || clearFirst) {
       this.send(CAPTURE_OFF);
       this.send(DELETE_ALL);
@@ -546,7 +568,11 @@
   };
 
   /** The user switched ticket reading back on: allow it again even after a low-memory stop. */
-  Monitor.prototype.allowCapture = function () { this.captureBlocked = false; };
+  Monitor.prototype.allowCapture = function () {
+    this.captureBlocked = false;
+    this.deleteFailures = 0;
+    this.unreadable = 0;
+  };
 
   Monitor.prototype.log = function (text) { this.emit({ type: 'log', text: text }); };
 
@@ -568,8 +594,7 @@
   Monitor.prototype.poll = function () {
     var s = this.settings();
     if (!this.busy) {
-      var capturing = s.readTickets && !this.captureBlocked;
-      var tidyDue = capturing && !this.jobT && this.pending === 0 &&
+      var tidyDue = this.capturing() && !this.jobT && this.pending === 0 &&
         Date.now() - this.lastTidy > this.timing.tidyMs;
       if (tidyDue) {
         this.readCaptured(true);
@@ -647,8 +672,8 @@
     var count = this.pending;
     this.pending = 0;
     this.log('Ticket printed (counter +' + count + ')');
-    if (!this.settings().readTickets || this.captureBlocked) {
-      this.emit({ type: 'ticket', matches: [], text: '', raw: '', isImage: false, read: false });
+    if (!this.capturing()) {
+      this.emit({ type: 'ticket', matches: [], text: '', raw: '', isImage: false, read: false, size: 0 });
       return Promise.resolve();
     }
     return this.readCaptured(false).then(function (done) {
@@ -668,18 +693,20 @@
     var raw = '';
     var free = null;
     var skipRead = false;
-    return this.requestRaw('! U1 do "file.dir" "E:"\r\n')
+    var sizesBefore = {};
+    return this.requestRaw(LIST_FILES)
       .then(function (listing) {
         files = captureFiles(listing);
-        var fm = /(\d+)\s+bytes\s+free/i.exec(listing);
-        if (fm) { free = parseInt(fm[1], 10); self.emit({ type: 'memory', free: free }); }
+        sizesBefore = fileSizes(listing);
+        free = freeBytes(listing);
+        if (free !== null) self.emit({ type: 'memory', free: free });
         if (tidy) {
           // A routine check only looks at the list. The copies are read and cleared only once they
           // have grown, which keeps the printer's workload low and makes it very unlikely that a
           // clean-up lands on the same second as an arriving ticket.
-          var sizes = [], sm, sizeRe = /IN\d{3}\.DMP\s+(\d+)/gi;
-          while ((sm = sizeRe.exec(listing))) sizes.push(parseInt(sm[1], 10));
-          var total = sizes.length === files.length ? sizes.reduce(function (a, b) { return a + b; }, 0) : null;
+          var known = Object.keys(sizesBefore);
+          var total = known.length === files.length
+            ? known.reduce(function (sum, name) { return sum + sizesBefore[name]; }, 0) : null;
           var grown = total !== null ? total > self.tidyBytes
                                      : Date.now() - self.lastFullTidy > self.timing.fullTidyMs;
           if (!grown && !self.staleSeen) { skipRead = true; return; }
@@ -707,28 +734,87 @@
         return files.reduce(function (p, f) {
           return p.then(function () { return self.send('! U1 do "file.delete" "E:' + f + '"\r\n'); });
         }, Promise.resolve()).then(function () {
-          self.checkMemory(free);
           if (!tidy) {
+            var data = stripOwnCommands(raw).trim();
             self.emit({
               type: 'ticket', matches: res.matches, text: res.text, isImage: res.isImage,
-              raw: stripOwnCommands(raw).trim().slice(0, 20000), read: files.length > 0 && res.hasJobData
+              raw: data.slice(0, 20000), read: files.length > 0 && res.hasJobData, size: data.length
             });
+            self.noteReadability(res, data.length);
           }
-          return true;
-        });
+          // The alert has gone out; now confirm the printer really deleted the copies.
+          return self.verifyCleanup(sizesBefore, free);
+        }).then(function () { return true; });
       })
       .then(function (done) { self.rx = ''; self.busy = false; return done; },
             function (e) { self.rx = ''; self.busy = false; self.log('Read failed: ' + e); return false; });
   };
 
-  /** Safety stop: never let ticket copies fill the printer. */
-  Monitor.prototype.checkMemory = function (free) {
-    if (free === null || free >= this.lowMemoryBytes || this.captureBlocked) return;
-    if (!this.settings().readTickets) return;
+  /** Switches ticket reading off for good (until the user turns it back on) and says why. */
+  Monitor.prototype.stopReading = function (reason, free) {
+    if (this.captureBlocked) return;
     this.captureBlocked = true;
     this.send(CAPTURE_OFF);
     this.send(DELETE_ALL);
-    this.emit({ type: 'lowmemory', free: free });
+    this.emit({ type: 'readingstopped', reason: reason, free: free === undefined ? null : free });
+  };
+
+  /** Safety stop: never let ticket copies fill the printer. */
+  Monitor.prototype.checkMemory = function (free) {
+    if (free === null || free >= this.lowMemoryBytes) return;
+    if (!this.settings().readTickets) return;
+    this.stopReading('memory', free);
+  };
+
+  /**
+   * Safety stop: after deleting, look at the list again. If the copies are still there at full size
+   * twice in a row, the printer isn't deleting them, so stop making more.
+   */
+  Monitor.prototype.verifyCleanup = function (before, freeBefore) {
+    var self = this;
+    var names = Object.keys(before);
+    if (!names.length || !this.running) { this.checkMemory(freeBefore); return Promise.resolve(); }
+    return this.requestRaw(LIST_FILES).then(function (listing) {
+      if (!self.running) return;
+      var after = fileSizes(listing);
+      var free = freeBytes(listing);
+      if (free !== null) self.emit({ type: 'memory', free: free });
+      var stuck = names.some(function (n) { return after[n] !== undefined && after[n] >= before[n]; });
+      self.deleteFailures = stuck ? self.deleteFailures + 1 : 0;
+      if (self.deleteFailures >= 2) self.stopReading('cleanup', free);
+      self.checkMemory(free === null ? freeBefore : free);
+    });
+  };
+
+  /**
+   * Safety stop: labels sent as pictures (or very large ones) can't be read for names, and they are
+   * the copies that would use the most memory. After three in a row, stop keeping copies.
+   */
+  Monitor.prototype.noteReadability = function (res, size) {
+    if (!res.hasJobData) return;
+    if (res.isImage || size > this.bigLabelBytes) this.unreadable++;
+    else this.unreadable = 0;
+    if (this.unreadable >= 3) this.stopReading('pictures');
+  };
+
+  /** True while the printer is being asked to keep copies of tickets. */
+  Monitor.prototype.capturing = function () {
+    return !!this.settings().readTickets && !this.captureBlocked && !this.paused;
+  };
+
+  /** The page is going out of sight (phone locked, another app): stop keeping copies until it is back. */
+  Monitor.prototype.pause = function () {
+    var self = this;
+    if (this.paused) return Promise.resolve();
+    this.paused = true;
+    if (!this.running) return Promise.resolve();
+    return this.send(CAPTURE_OFF).then(function () { return self.send(DELETE_ALL); });
+  };
+
+  Monitor.prototype.resume = function () {
+    if (!this.paused) return;
+    this.paused = false;
+    if (this.running) this.applyCapture(false);
   };
 
   Monitor.prototype.requestRaw = function (command) {
@@ -821,6 +907,31 @@
     this.onDone();
   };
 
+  // ---------- Going quiet in a rush ----------
+
+  /**
+   * Counts jobs in a sliding window. When more than `limit` arrive within `windowMs`, it reports
+   * "quiet" and stays quiet until a full window has passed with no new job.
+   * opts.settings(): { limit (0 = never go quiet), windowMs }
+   */
+  function RushGuard(opts) {
+    this.settings = opts.settings;
+    this.times = [];
+    this.quietUntil = 0;
+  }
+
+  RushGuard.prototype.isQuiet = function (now) { return now < this.quietUntil; };
+
+  /** Record `jobs` new jobs at time `now`. Returns true if alerts should stay silent. */
+  RushGuard.prototype.note = function (now, jobs) {
+    var s = this.settings();
+    if (!s.limit) { this.times = []; this.quietUntil = 0; return false; }
+    for (var i = 0; i < Math.max(1, jobs || 1); i++) this.times.push(now);
+    this.times = this.times.filter(function (t) { return now - t < s.windowMs; });
+    if (this.times.length > s.limit || this.isQuiet(now)) this.quietUntil = now + s.windowMs;
+    return this.isQuiet(now);
+  };
+
   // ---------- Pretend printer, for the demo and the tests ----------
 
   /** Behaves like the ZD421 as far as this page can tell, including capturing our own commands. */
@@ -860,6 +971,8 @@
         self.reply(out + '- ' + self.freeBytes() + ' bytes free E: ONBOARD FLASH\r\n');
       } else if ((m = /do "file\.type" "E:([^"]+)"/.exec(line))) {
         self.reply(self.files[m[1]] || '');
+      } else if (self.deleteBroken && /do "file\.delete"/.test(line)) {
+        // pretend the printer ignores delete commands
       } else if ((m = /do "file\.delete" "E:([^"]+)"/.exec(line))) {
         var pattern = new RegExp('^' + m[1].replace(/\./g, '\\.').replace(/\*/g, '.*') + '$');
         Object.keys(self.files).forEach(function (f) { if (pattern.test(f)) delete self.files[f]; });
@@ -898,7 +1011,7 @@
     normalize: normalize, analyze: analyze, captureFiles: captureFiles,
     stripOwnCommands: stripOwnCommands, parseStatus: parseStatus,
     newHistory: newHistory, recordTicket: recordTicket, pruneHistory: pruneHistory, historyStats: historyStats,
-    dayKey: dayKey, Monitor: Monitor, Announcer: Announcer, FakePrinter: FakePrinter
+    dayKey: dayKey, Monitor: Monitor, Announcer: Announcer, RushGuard: RushGuard, FakePrinter: FakePrinter
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.TicketBell = api;
@@ -918,7 +1031,7 @@
   // ---------- Saved settings ----------
   var state = {
     customers: [], notifyOthers: true, speak: true, intercom: true, readTickets: true, partial: true,
-    times: 2, voice: '', rate: 0.95, pitch: 0.5, healthAlerts: true,
+    times: 2, voice: '', rate: 0.95, pitch: 0.5, healthAlerts: true, pauseHidden: true, rushLimit: 3,
     pollMs: 3000, counterVar: 'odometer.total_label_count'
   };
   var GAP_MS = 10000;      // quiet time between repeats of an announcement
@@ -1315,17 +1428,58 @@
     box.classList.remove('hidden');
   }
   function megabytes(bytes) { return (bytes / 1048576).toFixed(1) + ' MB'; }
-  function onLowMemory(e) {
+  // ---------- Going quiet in a rush ----------
+  var RUSH_WINDOW_MS = 60000;
+  var rush = new TB.RushGuard({
+    settings: function () { return { limit: state.rushLimit, windowMs: RUSH_WINDOW_MS }; }
+  });
+  var busyTimer = null;
+  function showBusy() {
+    var box = $('busy');
+    box.textContent = '';
+    box.appendChild(el('strong', '', '🔕 Busy: sound is paused'));
+    box.appendChild(el('div', 'sub', 'More than ' + state.rushLimit + ' tickets came in within a minute. They are all ' +
+      'in the list below. Sound comes back after a minute with no new tickets.'));
+    box.classList.remove('hidden');
+    clearTimeout(busyTimer);
+    busyTimer = setTimeout(function () {
+      if (rush.isQuiet(Date.now())) { showBusy(); return; }
+      box.classList.add('hidden');
+      log('Quiet again: sound is back on');
+    }, Math.max(0, rush.quietUntil - Date.now()) + 100);
+  }
+
+  // Remembers, across visits, that the printer was asked to keep copies and hasn't been confirmed clear.
+  var OPEN_KEY = 'ticketbell-reading-open';
+  function markOpen() { try { localStorage.setItem(OPEN_KEY, String(Date.now())); } catch (e) {} }
+  function markClean() { try { localStorage.removeItem(OPEN_KEY); } catch (e) {} }
+
+  /** A safety stop switched ticket reading off. Say which one and why. */
+  function onReadingStopped(e) {
     state.readTickets = false;
     save();
     $('optRead').checked = false;
+    markClean();
+    var title, detail;
+    if (e.reason === 'memory') {
+      title = 'Printer memory is low (' + megabytes(e.free) + ' free)';
+      detail = 'To protect the printer, ticket reading has been switched off and its saved copies removed.';
+    } else if (e.reason === 'cleanup') {
+      title = 'The printer isn\'t deleting its saved copies';
+      detail = 'Ticket reading has been switched off so no more copies are made. Switch the printer off and on ' +
+        'to be sure it has stopped, and send a screenshot of the Log.';
+    } else {
+      title = 'These labels are sent as pictures';
+      detail = 'Names can\'t be read from pictures, and picture copies use the most printer memory, so ticket ' +
+        'reading has been switched off and the copies removed.';
+    }
     var box = $('memWarn');
     box.textContent = '';
-    box.appendChild(el('strong', '', '⚠️ Printer memory is low (' + megabytes(e.free) + ' free)'));
-    box.appendChild(el('div', 'sub', 'To protect the printer, ticket reading has been switched off and its saved copies ' +
-      'removed. Tickets are still announced, without names. Turn "Read ticket contents" back on in Settings to try again.'));
+    box.appendChild(el('strong', '', '⚠️ ' + title));
+    box.appendChild(el('div', 'sub', detail + ' Tickets are still announced, without names. Turn "Read ticket ' +
+      'contents" back on in Settings to try again.'));
     box.classList.remove('hidden');
-    log('Printer memory low (' + megabytes(e.free) + ' free): ticket reading switched off');
+    log(title + ': ticket reading switched off');
     chime('lost');
   }
 
@@ -1345,9 +1499,28 @@
     else if (e.isImage) $('lastNote').textContent = 'This ticket was sent as a picture, so names can\'t be read from it.';
     else if (!e.read) $('lastNote').textContent = 'The printer had no saved copy of this ticket.';
     else $('lastNote').textContent = 'No watched customer on this ticket.';
+    if (e.read && e.size) {
+      $('lastNote').textContent += ' Size of the copy the printer kept: about ' +
+        (e.size < 1024 ? e.size + ' bytes' : Math.round(e.size / 1024) + ' KB') + ' (now deleted).';
+    }
     $('lastText').textContent = (e.isImage ? e.raw : e.text) || '—';
 
-    if (vip) { log('Customer ticket: ' + e.matches.join(', ')); showVip(e.matches); }
+    if (vip) log('Customer ticket: ' + e.matches.join(', '));
+
+    // A rush of tickets: go quiet instead of chiming and announcing over and over.
+    var now = Date.now();
+    var wasQuiet = rush.isQuiet(now);
+    if (rush.note(now, e.matches.length)) {
+      if (!wasQuiet) {
+        try { speechSynthesis.cancel(); } catch (err) {}
+        announcer.dismiss();
+        log('Busy: more than ' + state.rushLimit + ' tickets within a minute, so sound is paused');
+      }
+      showBusy();
+      return;
+    }
+
+    if (vip) showVip(e.matches);
     else if (state.notifyOthers && Date.now() - lastOtherBeep > 10000) {
       // At most one beep per 10 seconds, and no talking over a customer announcement.
       lastOtherBeep = Date.now();
@@ -1363,7 +1536,7 @@
       if (e.type === 'log') log(e.text);
       else if (e.type === 'ticket') onTicket(e);
       else if (e.type === 'health') onHealth(e);
-      else if (e.type === 'lowmemory') onLowMemory(e);
+      else if (e.type === 'readingstopped') onReadingStopped(e);
       else if (e.type === 'memory') {
         $('memory').textContent = 'Printer memory free: ' + megabytes(e.free);
         $('memory').classList.remove('hidden');
@@ -1427,6 +1600,8 @@
     setStatus('on', 'Watching ' + printerName + ' for tickets');
     log('Connected to ' + printerName);
     $('health').classList.add('hidden');   // the printer reports any current problem again after connecting
+    $('leftOn').classList.add('hidden');   // connecting clears any copies left from last time
+    if (state.readTickets) markOpen(); else markClean();
     monitor.start();
   }
 
@@ -1465,14 +1640,23 @@
     wanted = false; connected = false;
     setStatus('busy', 'Disconnecting…');
     // Leave the printer as we found it: capture off, saved copies deleted. Don't wait forever.
+    var cleared = false;
     try {
-      await Promise.race([monitor.shutdown(), new Promise(function (r) { setTimeout(r, 3000); })]);
+      await Promise.race([
+        monitor.shutdown().then(function () { cleared = true; }),
+        new Promise(function (r) { setTimeout(r, 3000); })
+      ]);
     } catch (e) {}
     try { if (device && device.gatt.connected) device.gatt.disconnect(); } catch (e) {}
     txChar = null;
     $('health').classList.add('hidden');
     setStatus('', 'Not connected');
-    log('Disconnected. Ticket copies on the printer were cleared.');
+    if (cleared) {
+      markClean();
+      log('Disconnected. The printer was told to stop keeping copies and delete them.');
+    } else {
+      log('Disconnected, but the printer didn\'t take the clean-up commands in time. Connect again to clear it.');
+    }
   }
 
   function onDisconnected() {
@@ -1515,7 +1699,14 @@
     }
   }
   document.addEventListener('visibilitychange', function () {
-    if (document.visibilityState !== 'visible' || !wanted) return;
+    if (document.visibilityState !== 'visible') {
+      // Out of sight (phone locked, another app): this page can't look after the printer,
+      // so tell it to stop keeping copies until the page is back.
+      if (connected && state.pauseHidden && state.readTickets) monitor.pause();
+      return;
+    }
+    if (monitor.paused) { monitor.resume(); if (connected) log('Back in view: reading tickets again'); }
+    if (!wanted) return;
     keepAwake();
     if (!DEMO && device && !device.gatt.connected) onDisconnected();
   });
@@ -1625,7 +1816,23 @@
   bindCheck('optRead', 'readTickets', function () {
     if (state.readTickets) { monitor.allowCapture(); $('memWarn').classList.add('hidden'); }
     monitor.applyCapture();
+    if (connected) { if (state.readTickets) markOpen(); else markClean(); }
   });
+  bindCheck('optPause', 'pauseHidden');
+  $('optRush').value = String(state.rushLimit);
+  $('optRush').addEventListener('change', function () { state.rushLimit = Number($('optRush').value); save(); });
+
+  // Last visit ended without a confirmed clean-up: say so, and how to fix it.
+  var leftOpen = null;
+  try { leftOpen = localStorage.getItem(OPEN_KEY); } catch (e) {}
+  if (leftOpen) {
+    var when = new Date(Number(leftOpen));
+    $('leftOn').appendChild(el('strong', '', 'The printer may still be keeping copies of labels'));
+    $('leftOn').appendChild(el('div', 'sub', 'Last time (' + dayName(when.getTime()) + ', ' + timeOf(when.getTime()) +
+      ') this page closed without confirming that ticket reading was switched off. Connect to the printer and ' +
+      'the page clears the copies straight away, or switch the printer off and on.'));
+    $('leftOn').classList.remove('hidden');
+  }
   bindCheck('optHealth', 'healthAlerts', function () { if (!state.healthAlerts) $('health').classList.add('hidden'); });
   $('moreTickets').addEventListener('click', function () { showAllTickets = true; renderTickets(); });
   $('clearHistory').addEventListener('click', function () {
