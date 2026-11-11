@@ -273,7 +273,7 @@
     <pre id="log">—</pre>
   </details>
 
-  <p class="sub" style="text-align:center">Ticket Bell version 13</p>
+  <p class="sub" style="text-align:center">Ticket Bell version 14</p>
 </main>
 
 <div id="overlay" class="hidden" role="alertdialog" aria-live="assertive">
@@ -1225,13 +1225,23 @@
     if (!mixSupported()) return false;
     try { navigator.audioSession.type = MIX_TYPES[state.mix] || 'ambient'; return true; } catch (e) { return false; }
   }
+  var soundNoted = false;
+  /** Wakes the voice. Only done while the voice is on: on an iPhone any speech can stop another app's music. */
+  function primeVoice() {
+    try { if (state.speak && window.speechSynthesis) speechSynthesis.speak(new SpeechSynthesisUtterance('')); } catch (e) {}
+  }
   function unlockSound() {
-    applyMix();
+    var mixed = applyMix();
     try {
       audio = audio || new (window.AudioContext || window.webkitAudioContext)();
       audio.resume();
-      if (window.speechSynthesis) speechSynthesis.speak(new SpeechSynthesisUtterance(''));
     } catch (e) {}
+    primeVoice();
+    if (!soundNoted) {
+      soundNoted = true;
+      log('Sound: music setting ' + (mixed ? 'accepted (' + navigator.audioSession.type + ')' : 'not offered by this browser') +
+        ', voice ' + (state.speak ? 'on' : 'off'));
+    }
   }
   function tone(freq, at, dur, vol) {
     var o = audio.createOscillator(), g = audio.createGain();
@@ -2054,7 +2064,7 @@
     $(id).addEventListener('change', function () { state[key] = $(id).checked; save(); if (after) after(); });
   }
   bindCheck('optOthers', 'notifyOthers');
-  bindCheck('optSpeak', 'speak');
+  bindCheck('optSpeak', 'speak', primeVoice);
   bindCheck('optPartial', 'partial');
   bindCheck('optIntercom', 'intercom');
   $('optTimes').value = String(state.times);
