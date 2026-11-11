@@ -176,6 +176,7 @@
     </div>
     <div id="reading" class="sub hidden"></div>
     <div id="today" class="sub hidden"></div>
+    <div id="lastAlert" class="sub hidden"></div>
     <ul id="checks" class="checks hidden" aria-label="Setup check"></ul>
     <div id="awake" class="sub hidden"></div>
     <button id="connect" class="wide">Connect to printer</button>
@@ -282,7 +283,7 @@
     <pre id="log">—</pre>
   </details>
 
-  <p class="sub" style="text-align:center">Ticket Bell version 19</p>
+  <p class="sub" style="text-align:center">Ticket Bell version 20</p>
 </main>
 
 <div id="overlay" class="hidden" role="alert" aria-live="assertive">
@@ -1269,6 +1270,19 @@
     if (!mixSupported()) return false;
     try { navigator.audioSession.type = MIX_TYPES[state.mix] || 'ambient'; return true; } catch (e) { return false; }
   }
+  var hum = null;
+  /** A tone far too quiet to hear, played all the time, so the phone doesn't let the page's sound go idle. */
+  function keepSoundBusy() {
+    if (hum || !audio) return;
+    try {
+      var o = audio.createOscillator(), g = audio.createGain();
+      o.frequency.value = 30;
+      g.gain.value = 0.0002;
+      o.connect(g); g.connect(audio.destination);
+      o.start();
+      hum = o;
+    } catch (e) {}
+  }
   var soundNoted = false;
   /** Wakes the voice. Only done while the voice is on: on an iPhone any speech can stop another app's music. */
   function primeVoice() {
@@ -1280,6 +1294,7 @@
     try {
       audio = audio || new (window.AudioContext || window.webkitAudioContext)();
       audio.onstatechange = showSoundState;
+      keepSoundBusy();
       var p = audio.resume();
       if (p && p.then) p.then(showSoundState, showSoundState);
     } catch (e) {}
@@ -1874,21 +1889,40 @@
     var wasQuiet = rush.isQuiet(now);
     if (rush.note(now, e.matches.length)) {
       if (!wasQuiet) {
-        try { speechSynthesis.cancel(); } catch (err) {}
+        stopVoice();
         announcer.dismiss();
         log('Busy: more than ' + state.rushLimit + ' tickets within a minute, so sound is paused');
       }
       showBusy();
+      noteAlert('no sound, because more than ' + state.rushLimit + ' tickets printed within a minute');
       return;
     }
 
-    if (vip) showVip(e.matches);
-    else if (state.notifyOthers && Date.now() - lastOtherBeep > 10000) {
-      // At most one beep per 10 seconds, and no talking over a customer announcement.
+    // Worked out before the sound is asked for, so it tells the truth about a sleeping sound.
+    var sound = !audio ? 'no sound, because sound has not been started (tap Test the alarm)'
+      : soundAsleep() ? 'the phone had put the sound to sleep (' + audio.state + '), so it may be late or silent'
+      : '';
+    if (vip) {
+      showVip(e.matches);
+      noteAlert(sound || 'announced ' + e.matches.join(', '));
+    } else if (!state.notifyOthers) {
+      noteAlert('no sound, because "Alert for other tickets" is off');
+    } else if (Date.now() - lastOtherBeep > 10000) {
+      // At most one chime per 10 seconds, and no talking over a customer announcement.
       lastOtherBeep = Date.now();
       chime('other');
       if (!announcer.active) say('Ticket printed', 1400, ['printed']);
+      noteAlert(sound || 'chime played');
+    } else {
+      noteAlert('no sound, because another ticket chimed less than 10 seconds earlier');
     }
+  }
+  /** Shows and logs what the page did about the latest ticket's sound. */
+  function noteAlert(what) {
+    var line = 'Last ticket ' + clock() + ': ' + what;
+    $('lastAlert').textContent = line;
+    $('lastAlert').classList.remove('hidden');
+    log(line);
   }
 
   // ---------- Setup check: one line per thing that has to work ----------
