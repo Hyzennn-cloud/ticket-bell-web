@@ -65,7 +65,9 @@
   @keyframes flash { from { background: #b45309; } to { background: #7c2d12; } }
   @media (prefers-reduced-motion: reduce) { #overlay { animation: none; } }
   #overlay .star { font-size: 72px; }
-  #overlay .who { font-size: 40px; font-weight: 800; line-height: 1.15; margin: 8px 0; overflow-wrap: anywhere; }
+  #overlay .who { font-size: 40px; font-weight: 800; line-height: 1.15; margin: 8px 0; overflow-wrap: anywhere;
+                  white-space: pre-line; }
+  #overlay .who.many { font-size: 30px; }
   #overlay .when { font-size: 20px; opacity: .9; }
   #overlay .tap { margin-top: 36px; font-size: 17px; opacity: .85; }
 </style>
@@ -121,8 +123,14 @@
     <label class="opt"><span>Say the name out loud</span><input id="optSpeak" type="checkbox"></label>
     <label class="opt"><span>Intercom announcement<small>A chime, then "Attention please. Ticket for…"</small></span>
       <input id="optIntercom" type="checkbox"></label>
-    <label class="opt"><span>Repeat alarm until I tap<small>For watched customers</small></span>
-      <input id="optRepeat" type="checkbox"></label>
+    <label class="opt"><span>Announce each customer<small>10 seconds apart, then the alert closes by itself</small></span>
+      <select id="optTimes"><option value="1">Once</option><option value="2">Twice</option><option value="3">3 times</option></select></label>
+    <label class="opt"><span>Voice</span>
+      <select id="optVoice" style="max-width:55%"><option value="">Automatic (deep)</option></select></label>
+    <label class="opt" style="display:block"><span>Voice speed</span>
+      <input id="optRate" type="range" min="0.6" max="1.4" step="0.05" style="width:100%;margin-top:8px"></label>
+    <label class="opt" style="display:block"><span>Voice pitch<small>Left is deeper</small></span>
+      <input id="optPitch" type="range" min="0.1" max="1.5" step="0.05" style="width:100%;margin-top:8px"></label>
     <label class="opt"><span>Read ticket contents<small>Needed to recognise customer names</small></span>
       <input id="optRead" type="checkbox"></label>
     <label class="opt"><span>Check every</span>
@@ -149,10 +157,10 @@
   <div class="star">⭐</div>
   <div id="ovWho" class="who"></div>
   <div id="ovWhen" class="when"></div>
-  <div class="tap">Tap anywhere to dismiss</div>
+  <div class="tap">Tap anywhere to stop</div>
 </div>
 
-<script src="ticketbell.js?v=2"></script>
+<script src="ticketbell.js?v=3"></script>
 <script>
 (function () {
   'use strict';
@@ -165,9 +173,12 @@
 
   // ---------- Saved settings ----------
   var state = {
-    customers: [], notifyOthers: true, speak: true, intercom: true, repeat: true, readTickets: true, partial: true,
+    customers: [], notifyOthers: true, speak: true, intercom: true, readTickets: true, partial: true,
+    times: 2, voice: '', rate: 0.95, pitch: 0.5,
     pollMs: 3000, counterVar: 'odometer.total_label_count'
   };
+  var GAP_MS = 10000;      // quiet time between repeats of an announcement
+  var LINGER_MS = 3000;    // how long the alert stays up after the last one
   try { Object.assign(state, JSON.parse(localStorage.getItem('ticketbell') || '{}')); } catch (e) {}
   function save() { try { localStorage.setItem('ticketbell', JSON.stringify(state)); } catch (e) {} }
 
@@ -181,7 +192,7 @@
   }
 
   // ---------- Sound ----------
-  var audio = null, repeatTimer = null;
+  var audio = null, lastOtherBeep = 0;
   function unlockSound() {
     try {
       audio = audio || new (window.AudioContext || window.webkitAudioContext)();
@@ -217,42 +228,90 @@
       tone(660, t, 0.35, 0.5);
     }
   }
-  function say(text, delayMs, intercom) {
-    if (!state.speak || !window.speechSynthesis) return;
-    setTimeout(function () {
-      try {
-        var u = new SpeechSynthesisUtterance(text);
-        if (intercom) { u.rate = 0.8; u.pitch = 0.7; }   // slow and low, like a store announcement
-        speechSynthesis.speak(u);
-      } catch (e) {}
-    }, delayMs);
+  // ---------- Voice ----------
+  var DEEP_VOICES = ['Aaron', 'Daniel', 'Reed', 'Fred', 'Alex'];   // tried in order for "Automatic"
+  function englishVoices() {
+    try {
+      return speechSynthesis.getVoices().filter(function (v) { return /^en/i.test(v.lang); });
+    } catch (e) { return []; }
   }
-  function announce(who) {
+  function pickVoice() {
+    var voices = englishVoices();
+    if (state.voice) {
+      var chosen = voices.filter(function (v) { return v.voiceURI === state.voice; })[0];
+      if (chosen) return chosen;
+    }
+    for (var i = 0; i < DEEP_VOICES.length; i++) {
+      var found = voices.filter(function (v) { return v.name.indexOf(DEEP_VOICES[i]) === 0; })[0];
+      if (found) return found;
+    }
+    return null;   // the phone's default voice
+  }
+  function fillVoices() {
+    var sel = $('optVoice');
+    while (sel.options.length > 1) sel.remove(1);
+    englishVoices().forEach(function (v) {
+      var o = document.createElement('option');
+      o.value = v.voiceURI;
+      o.textContent = v.name + ' (' + v.lang + ')';
+      sel.appendChild(o);
+    });
+    sel.value = state.voice;
+    if (sel.value !== state.voice) sel.value = '';
+  }
+
+  /** Speaks after a delay. Resolves when the speech has finished (or clearly isn't going to). */
+  function say(text, delayMs) {
+    return new Promise(function (resolve) {
+      if (!state.speak || !window.speechSynthesis) { setTimeout(resolve, delayMs); return; }
+      var finished = false;
+      var done = function () { if (!finished) { finished = true; resolve(); } };
+      setTimeout(function () {
+        try {
+          var u = new SpeechSynthesisUtterance(text);
+          var v = pickVoice();
+          if (v) { u.voice = v; u.lang = v.lang; }
+          u.rate = state.rate;
+          u.pitch = state.pitch;
+          u.onend = done;
+          u.onerror = done;
+          speechSynthesis.speak(u);
+        } catch (e) { done(); }
+        setTimeout(done, 2500 + text.length * 130);   // in case the phone never reports the end
+      }, delayMs);
+    });
+  }
+  function listNames(names) {
+    if (names.length < 2) return names[0] || '';
+    return names.slice(0, -1).join(', ') + ' and ' + names[names.length - 1];
+  }
+  /** One announcement: chime, then the names. Resolves when it has finished. */
+  function playAnnouncement(names) {
+    var what = (names.length > 1 ? 'Tickets for ' : 'Ticket for ') + listNames(names) + '.';
     if (state.intercom && state.speak) {
       chime('pa');
-      say('Attention please. Ticket for ' + who + '. I repeat. Ticket for ' + who + '.', 2000, true);
-    } else {
-      chime('vip');
-      say('Ticket for ' + who, 2500);
+      return say('Attention please. ' + what, 2000);
     }
+    chime('vip');
+    return say(what, 2500);
   }
 
   // ---------- Alerts ----------
-  function showVip(names) {
-    var who = names.join(', ');
-    $('ovWho').textContent = who;
-    $('ovWhen').textContent = 'Ticket printed at ' + clock();
-    $('overlay').classList.remove('hidden');
-    announce(who);
-    clearInterval(repeatTimer);
-    if (state.repeat) {
-      repeatTimer = setInterval(function () { announce(who); }, state.intercom && state.speak ? 15000 : 8000);
-    }
-  }
+  var announcer = new TB.Announcer({
+    play: playAnnouncement,
+    settings: function () { return { times: state.times, gapMs: GAP_MS, lingerMs: LINGER_MS }; },
+    onShow: function (names) {
+      $('ovWho').textContent = names.join('\n');
+      $('ovWho').classList.toggle('many', names.length > 2);
+      $('ovWhen').textContent = (names.length > 1 ? 'Tickets printed, latest at ' : 'Ticket printed at ') + clock();
+      $('overlay').classList.remove('hidden');
+    },
+    onDone: function () { $('overlay').classList.add('hidden'); }
+  });
+  function showVip(names) { announcer.add(names); }
   $('overlay').addEventListener('click', function () {
-    clearInterval(repeatTimer);
     try { speechSynthesis.cancel(); } catch (e) {}
-    $('overlay').classList.add('hidden');
+    announcer.dismiss();
   });
 
   function onTicket(e) {
@@ -269,7 +328,12 @@
     $('lastText').textContent = (e.isImage ? e.raw : e.text) || '—';
 
     if (vip) { log('Customer ticket: ' + e.matches.join(', ')); showVip(e.matches); }
-    else if (state.notifyOthers) { chime('other'); say('Ticket printed', 500); }
+    else if (state.notifyOthers && Date.now() - lastOtherBeep > 10000) {
+      // At most one beep per 10 seconds, and no talking over a customer announcement.
+      lastOtherBeep = Date.now();
+      chime('other');
+      if (!announcer.active) say('Ticket printed', 500);
+    }
   }
 
   // ---------- Monitor ----------
@@ -464,7 +528,15 @@
   bindCheck('optSpeak', 'speak');
   bindCheck('optPartial', 'partial');
   bindCheck('optIntercom', 'intercom');
-  bindCheck('optRepeat', 'repeat');
+  $('optTimes').value = String(state.times);
+  $('optTimes').addEventListener('change', function () { state.times = Number($('optTimes').value); save(); });
+  $('optRate').value = String(state.rate);
+  $('optRate').addEventListener('change', function () { state.rate = Number($('optRate').value); save(); });
+  $('optPitch').value = String(state.pitch);
+  $('optPitch').addEventListener('change', function () { state.pitch = Number($('optPitch').value); save(); });
+  $('optVoice').addEventListener('change', function () { state.voice = $('optVoice').value; save(); });
+  fillVoices();
+  if (window.speechSynthesis && speechSynthesis.addEventListener) speechSynthesis.addEventListener('voiceschanged', fillVoices);
   bindCheck('optRead', 'readTickets', function () { monitor.applyCapture(); });
   $('optPoll').value = String(state.pollMs);
   $('optPoll').addEventListener('change', function () { state.pollMs = Number($('optPoll').value); save(); });

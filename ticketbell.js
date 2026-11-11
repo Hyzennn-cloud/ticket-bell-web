@@ -262,6 +262,72 @@
     r.resolve(r.buf);
   };
 
+  // ---------- Announcement queue ----------
+
+  /**
+   * Announces each name a fixed number of times with a quiet gap between rounds,
+   * then closes by itself. Names that arrive while a round is playing join the
+   * next round, so several tickets share one announcement instead of overlapping.
+   *
+   * opts.play(names) -> Promise that resolves when the sound has finished
+   * opts.onShow(names), opts.onDone()
+   * opts.settings(): { times, gapMs, lingerMs }
+   */
+  function Announcer(opts) {
+    this.play = opts.play;
+    this.onShow = opts.onShow || function () {};
+    this.onDone = opts.onDone || function () {};
+    this.settings = opts.settings;
+    this.entries = [];
+    this.active = false;
+    this.gen = 0;
+    this.timer = null;
+  }
+
+  Announcer.prototype.names = function () { return this.entries.map(function (e) { return e.name; }); };
+
+  Announcer.prototype.add = function (names) {
+    var self = this;
+    var times = Math.max(1, this.settings().times || 1);
+    names.forEach(function (n) {
+      var existing = self.entries.filter(function (e) { return e.name === n; })[0];
+      if (existing) existing.left = times;
+      else self.entries.push({ name: n, left: times });
+    });
+    this.onShow(this.names());
+    if (!this.active) this.round();
+  };
+
+  Announcer.prototype.round = function () {
+    var self = this, gen = this.gen;
+    this.active = true;
+    var batch = this.entries.filter(function (e) { return e.left > 0; });
+    batch.forEach(function (e) { e.left--; });
+    var after = function () {
+      if (gen !== self.gen) return;                       // dismissed meanwhile
+      var more = self.entries.some(function (e) { return e.left > 0; });
+      var s = self.settings();
+      self.timer = setTimeout(function () {
+        if (gen !== self.gen) return;
+        // A name may have arrived during the closing pause.
+        if (self.entries.some(function (e) { return e.left > 0; })) self.round();
+        else self.dismiss();
+      }, more ? s.gapMs : (s.lingerMs || 0));
+    };
+    Promise.resolve()
+      .then(function () { return self.play(batch.map(function (e) { return e.name; })); })
+      .then(after, after);
+  };
+
+  /** Stop everything now (also used when the last round has finished). */
+  Announcer.prototype.dismiss = function () {
+    this.gen++;
+    clearTimeout(this.timer);
+    this.entries = [];
+    this.active = false;
+    this.onDone();
+  };
+
   // ---------- Pretend printer, for the demo and the tests ----------
 
   /** Behaves like the ZD421 as far as this page can tell, including capturing our own commands. */
@@ -316,7 +382,7 @@
 
   var api = {
     normalize: normalize, analyze: analyze, captureFiles: captureFiles,
-    stripOwnCommands: stripOwnCommands, Monitor: Monitor, FakePrinter: FakePrinter
+    stripOwnCommands: stripOwnCommands, Monitor: Monitor, Announcer: Announcer, FakePrinter: FakePrinter
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.TicketBell = api;
