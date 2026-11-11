@@ -236,7 +236,7 @@
       <input id="optSpeak" type="checkbox"></label>
     <label class="opt"><span>Intercom chime<small>The "bing-bong" chime. Off gives a faster triple beep.</small></span>
       <input id="optIntercom" type="checkbox"></label>
-    <label class="opt"><span>Announce each customer<small>10 seconds apart, then the alert closes by itself</small></span>
+    <label class="opt"><span>Say each name<small>One chime, then the voice. Repeats are 10 seconds apart, then the alert closes by itself.</small></span>
       <select id="optTimes"><option value="1">Once</option><option value="2">Twice</option><option value="3">3 times</option></select></label>
     <label class="opt"><span>Go quiet when busy<small>Stops the chime and voice when this many tickets arrive within a minute</small></span>
       <select id="optRush"><option value="0">Never</option><option value="3">More than 3</option><option value="5">More than 5</option></select></label>
@@ -273,7 +273,7 @@
     <pre id="log">—</pre>
   </details>
 
-  <p class="sub" style="text-align:center">Ticket Bell version 14</p>
+  <p class="sub" style="text-align:center">Ticket Bell version 15</p>
 </main>
 
 <div id="overlay" class="hidden" role="alertdialog" aria-live="assertive">
@@ -1030,8 +1030,8 @@
     var times = Math.max(1, this.settings().times || 1);
     names.forEach(function (n) {
       var existing = self.entries.filter(function (e) { return e.name === n; })[0];
-      if (existing) existing.left = times;
-      else self.entries.push({ name: n, left: times });
+      if (existing) { existing.left = times; existing.fresh = true; }
+      else self.entries.push({ name: n, left: times, fresh: true });
     });
     this.onShow(this.names());
     if (!this.active) this.round();
@@ -1041,7 +1041,9 @@
     var self = this, gen = this.gen;
     this.active = true;
     var batch = this.entries.filter(function (e) { return e.left > 0; });
-    batch.forEach(function (e) { e.left--; });
+    // "fresh" = someone in this round has not been announced yet, so it opens with the chime.
+    var fresh = batch.some(function (e) { return e.fresh; });
+    batch.forEach(function (e) { e.left--; e.fresh = false; });
     var after = function () {
       if (gen !== self.gen) return;                       // dismissed meanwhile
       var more = self.entries.some(function (e) { return e.left > 0; });
@@ -1054,7 +1056,7 @@
       }, more ? s.gapMs : (s.lingerMs || 0));
     };
     Promise.resolve()
-      .then(function () { return self.play(batch.map(function (e) { return e.name; })); })
+      .then(function () { return self.play(batch.map(function (e) { return e.name; }), fresh); })
       .then(after, after);
   };
 
@@ -1309,11 +1311,12 @@
   }
 
   /** Speaks after a delay. Resolves when the speech has finished (or clearly isn't going to). */
+  var speaking = null;   // kept so the phone doesn't drop the speech (and its "finished" signal) part-way
   function say(text, delayMs) {
     return new Promise(function (resolve) {
       if (!state.speak || !window.speechSynthesis) { setTimeout(resolve, delayMs); return; }
       var finished = false;
-      var done = function () { if (!finished) { finished = true; resolve(); } };
+      var done = function () { if (!finished) { finished = true; speaking = null; resolve(); } };
       setTimeout(function () {
         try {
           var u = new SpeechSynthesisUtterance(text);
@@ -1323,9 +1326,10 @@
           u.pitch = state.pitch;
           u.onend = done;
           u.onerror = done;
+          speaking = u;
           speechSynthesis.speak(u);
         } catch (e) { done(); }
-        setTimeout(done, 2500 + text.length * 130);   // in case the phone never reports the end
+        setTimeout(done, 1500 + text.length * 100);   // in case the phone never reports the end
       }, delayMs);
     });
   }
@@ -1333,23 +1337,25 @@
     if (names.length < 2) return names[0] || '';
     return names.slice(0, -1).join(', ') + ' and ' + names[names.length - 1];
   }
-  /** One announcement: chime, then the names. Resolves when it has finished. */
-  function playAnnouncement(names) {
+  /** One announcement: the chime (first time only), then the names. Resolves when it has finished. */
+  function playAnnouncement(names, fresh) {
     var what = (names.length > 1 ? 'Tickets for ' : 'Ticket for ') + listNames(names) + '.';
     // The chime follows the intercom switch; the voice follows its own switch.
     // With the voice off, say() just waits for the chime to finish.
+    // A repeat is the voice alone: one chime per alert.
     if (state.intercom) {
-      chime('pa');
-      return say('Attention please. ' + what, 2000);
+      if (fresh) chime('pa');
+      return say('Attention please. ' + what, fresh ? 2000 : 100);
     }
-    chime('vip');
-    return say(what, 2500);
+    if (fresh) chime('vip');
+    return say(what, fresh ? 2500 : 100);
   }
 
   // ---------- Alerts ----------
   var announcer = new TB.Announcer({
     play: playAnnouncement,
-    settings: function () { return { times: state.times, gapMs: GAP_MS, lingerMs: LINGER_MS }; },
+    // With the voice off there is nothing to repeat: one chime, then the alert closes.
+    settings: function () { return { times: state.speak ? state.times : 1, gapMs: GAP_MS, lingerMs: LINGER_MS }; },
     onShow: function (names) {
       $('ovWho').textContent = names.join('\n');
       $('ovWho').classList.toggle('many', names.length > 2);

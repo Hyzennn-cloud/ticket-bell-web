@@ -744,8 +744,8 @@
     var times = Math.max(1, this.settings().times || 1);
     names.forEach(function (n) {
       var existing = self.entries.filter(function (e) { return e.name === n; })[0];
-      if (existing) existing.left = times;
-      else self.entries.push({ name: n, left: times });
+      if (existing) { existing.left = times; existing.fresh = true; }
+      else self.entries.push({ name: n, left: times, fresh: true });
     });
     this.onShow(this.names());
     if (!this.active) this.round();
@@ -755,7 +755,9 @@
     var self = this, gen = this.gen;
     this.active = true;
     var batch = this.entries.filter(function (e) { return e.left > 0; });
-    batch.forEach(function (e) { e.left--; });
+    // "fresh" = someone in this round has not been announced yet, so it opens with the chime.
+    var fresh = batch.some(function (e) { return e.fresh; });
+    batch.forEach(function (e) { e.left--; e.fresh = false; });
     var after = function () {
       if (gen !== self.gen) return;                       // dismissed meanwhile
       var more = self.entries.some(function (e) { return e.left > 0; });
@@ -768,7 +770,7 @@
       }, more ? s.gapMs : (s.lingerMs || 0));
     };
     Promise.resolve()
-      .then(function () { return self.play(batch.map(function (e) { return e.name; })); })
+      .then(function () { return self.play(batch.map(function (e) { return e.name; }), fresh); })
       .then(after, after);
   };
 
