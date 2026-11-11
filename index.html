@@ -107,6 +107,9 @@
   td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   details.inner { border: 0; padding: 0; margin: 16px 0 0; background: transparent; }
   details.inner summary { font-weight: 400; color: var(--accent); }
+  .checks { margin-top: 12px; border-top: 1px solid var(--line); }
+  .checks li { padding: 7px 0; font-size: 15px; align-items: baseline; }
+  .checks .checkVal { text-align: right; color: var(--muted); }
   .hidden { display: none !important; }
   #overlay { position: fixed; inset: 0; z-index: 10; display: flex; flex-direction: column; align-items: center;
              justify-content: center; text-align: center; padding: 24px; background: #b45309; color: #fff;
@@ -168,9 +171,10 @@
     </div>
     <div id="reading" class="sub hidden"></div>
     <div id="today" class="sub hidden"></div>
-    <div id="memory" class="sub hidden"></div>
+    <ul id="checks" class="checks hidden" aria-label="Setup check"></ul>
     <div id="awake" class="sub hidden"></div>
     <button id="connect" class="wide">Connect to printer</button>
+    <p id="pickHint" class="sub">A list of nearby Bluetooth devices opens. The ZD421 usually appears under its serial number, which is on the sticker underneath the printer. Stand next to it when you connect.</p>
   </div>
 
   <div class="card">
@@ -267,7 +271,7 @@
     <pre id="log">—</pre>
   </details>
 
-  <p class="sub" style="text-align:center">Ticket Bell version 11</p>
+  <p class="sub" style="text-align:center">Ticket Bell version 12</p>
 </main>
 
 <div id="overlay" class="hidden" role="alertdialog" aria-live="assertive">
@@ -494,7 +498,7 @@
     this.emit = opts.onEvent || function () {};
     this.timing = Object.assign(
       { quietMs: 4000, rawFirstMs: 4000, rawIdleMs: 1000, tidyMs: 10 * 60 * 1000, fullTidyMs: 60 * 60 * 1000,
-        staleMs: 20000, healthMs: 10000, confirmMs: 2000 },
+        staleMs: 20000, healthMs: 10000, confirmMs: 2000, silentMs: 12000 },
       opts.timing
     );
     this.lowMemoryBytes = opts.lowMemoryBytes || 2000000;   // stop reading tickets below this much free memory
@@ -514,6 +518,11 @@
     this.expect = [];              // what kind of answer each question still out is waiting for
     this.captureWaiters = [];
     this.initialCheck = false;
+    this.startedAt = 0;
+    this.lastHeardAt = 0;          // when the printer last sent anything
+    this.heard = false;
+    this.silent = false;
+    this.logged = {};              // first-time details written to the log, to help diagnose a new printer
     this.transport = null;
     this.running = false;
     this.busy = false;
@@ -539,6 +548,10 @@
     this.healthKey = null;      // report the printer's state afresh on every connect
     this.lastHealth = 0;
     this.staleSeen = false;
+    this.startedAt = Date.now();
+    this.lastHeardAt = 0;
+    this.heard = false;
+    this.silent = false;
     // First connection of this session: see whether an earlier visit left capture on, then clear
     // out any copies it left behind.
     var fresh = this.baseline === null && this.pending === 0;
@@ -671,6 +684,11 @@
 
   Monitor.prototype.poll = function () {
     var s = this.settings();
+    // Connected but hearing nothing back: say so, instead of looking like it is working.
+    if (!this.silent && Date.now() - Math.max(this.lastHeardAt, this.startedAt) > this.timing.silentMs) {
+      this.silent = true;
+      this.emit({ type: 'answering', ok: false });
+    }
     if (!this.busy) {
       var tidyDue = this.capturing() && !this.jobT && this.pending === 0 &&
         Date.now() - this.lastTidy > this.timing.tidyMs;
@@ -688,6 +706,12 @@
   };
 
   Monitor.prototype.received = function (s) {
+    this.lastHeardAt = Date.now();
+    if (!this.heard || this.silent) {
+      this.heard = true;
+      this.silent = false;
+      this.emit({ type: 'answering', ok: true });
+    }
     if (this.raw) {
       this.raw.buf += s;
       if (this.raw.buf.length > 500000) this.finishRaw();
@@ -706,7 +730,12 @@
   /** Works out which question an answer belongs to, mostly from what the answer looks like. */
   Monitor.prototype.handleReply = function (value) {
     var status = parseSystemError(value);
-    if (status) { this.answered('status'); this.handleHealth(status); return; }
+    if (status) {
+      this.answered('status');
+      this.logOnce('status', 'Printer status answer: ' + value);
+      this.handleHealth(status);
+      return;
+    }
     if (CAPTURE_STATE_RE.test(value)) { this.answered('capture'); this.handleCaptureState(value.trim().toLowerCase()); return; }
     if (NUMBER_RE.test(value)) { this.answered('counter'); this.handleReading(value); return; }
     // Something else, usually "?" for a setting this printer doesn't have. Go by the order of asking.
@@ -738,8 +767,18 @@
     if (key === this.healthKey) return;
     var first = this.healthKey === null;
     this.healthKey = key;
-    if (first && !status.errors.length && !status.warnings.length) return;   // healthy at connect: say nothing
+    if (first && !status.errors.length && !status.warnings.length) {
+      this.emit({ type: 'healthok' });   // healthy at connect: no alert, just a tick on the setup check
+      return;
+    }
     this.emit({ type: 'health', errors: status.errors, warnings: status.warnings });
+  };
+
+  /** Writes a detail to the log the first time it is seen, so a screenshot shows how this printer answers. */
+  Monitor.prototype.logOnce = function (key, text) {
+    if (this.logged[key]) return;
+    this.logged[key] = true;
+    this.log(text);
   };
 
   Monitor.prototype.handleReading = function (value) {
@@ -813,6 +852,7 @@
     return this.requestRaw(LIST_FILES)
       .then(function (listing) {
         listed = listing;
+        self.logOnce('list', 'Printer file list: ' + (listing.replace(/\s+/g, ' ').trim().slice(0, 240) || '(no answer)'));
         files = captureFiles(listing);
         sizesBefore = fileSizes(listing);
         free = freeBytes(listing);
@@ -1189,8 +1229,13 @@
     o.connect(g); g.connect(audio.destination);
     o.start(at); o.stop(at + dur + 0.05);
   }
+  function wakeSound() {
+    // The phone can put the page's sound to sleep (a call, another app, a locked screen). Wake it again.
+    try { if (audio && audio.state !== 'running') audio.resume(); } catch (e) {}
+  }
   function chime(kind) {
     if (!audio) return;
+    wakeSound();
     var t = audio.currentTime + 0.05;
     if (kind === 'vip') {
       [0, 0.8, 1.6].forEach(function (off) {
@@ -1529,6 +1574,8 @@
 
   // ---------- Printer problems and memory ----------
   function onHealth(e) {
+    checks.problems = e.errors;
+    renderChecks();
     var box = $('health');
     box.textContent = '';
     if (!e.errors.length && !e.warnings.length) {
@@ -1603,6 +1650,7 @@
       'contents" back on in Settings to try again.'));
     box.classList.remove('hidden');
     log(title + ': ticket reading switched off');
+    renderChecks();
     chime('lost');
   }
 
@@ -1653,6 +1701,32 @@
     }
   }
 
+  // ---------- Setup check: one line per thing that has to work ----------
+  var checks = { answering: null, problems: null, memory: null };
+  function renderChecks() {
+    var ul = $('checks');
+    ul.textContent = '';
+    if (!wanted) { ul.classList.add('hidden'); return; }
+    var row = function (label, value) {
+      var li = el('li');
+      li.appendChild(el('span', '', label));
+      li.appendChild(el('span', 'checkVal', value));
+      ul.appendChild(li);
+    };
+    row('Printer answering', !connected ? '✗ Not connected'
+      : checks.answering === true ? '✓ Yes' : checks.answering === false ? '✗ No answer' : '… Waiting');
+    row('Problem check', !state.healthAlerts ? '– Off'
+      : monitor.statusUnsupported ? '– Not available on this printer'
+      : checks.problems === null ? '… Waiting'
+      : checks.problems.length ? '⚠ ' + checks.problems.join(', ') : '✓ No problems');
+    row('Reading ticket contents', monitor.captureBlocked ? '⚠ Stopped by a safety check'
+      : !state.readTickets ? '– Off' : monitor.paused ? '⏸ Paused' : '✓ On');
+    if (state.readTickets || checks.memory !== null) {
+      row('Printer memory free', checks.memory === null ? '… Checking' : megabytes(checks.memory));
+    }
+    ul.classList.remove('hidden');
+  }
+
   // ---------- Monitor ----------
   var monitor = new TB.Monitor({
     settings: function () { return state; },
@@ -1661,9 +1735,19 @@
       else if (e.type === 'ticket') onTicket(e);
       else if (e.type === 'health') onHealth(e);
       else if (e.type === 'readingstopped') onReadingStopped(e);
-      else if (e.type === 'memory') {
-        $('memory').textContent = 'Printer memory free: ' + megabytes(e.free);
-        $('memory').classList.remove('hidden');
+      else if (e.type === 'memory') { checks.memory = e.free; renderChecks(); }
+      else if (e.type === 'healthok') { checks.problems = []; renderChecks(); }
+      else if (e.type === 'answering') {
+        checks.answering = e.ok;
+        if (connected) {
+          if (e.ok) setStatus('on', 'Watching ' + printerName + ' for tickets');
+          else {
+            setStatus('lost', 'Connected, but the printer isn\'t answering');
+            log('The printer is connected but not answering. Close Zebra\'s own app if it is open, tap Disconnect, ' +
+              'switch the printer off and on, then connect again.');
+          }
+        }
+        renderChecks();
       }
       else if (e.type === 'reading') {
         var m = /^\s*(\d[\d,]*)/.exec(e.value);
@@ -1681,6 +1765,7 @@
 
   // ---------- Bluetooth ----------
   var device = null, txChar = null, wanted = false, connected = false, retrying = false, queue = Promise.resolve();
+  var listByService = false;
   var decoder = new TextDecoder();
   var encoder = new TextEncoder();
   var printerName = 'printer';
@@ -1706,21 +1791,29 @@
     $('dot').className = 'dot' + (kind ? ' ' + kind : '');
     $('status').textContent = text;
     $('connect').textContent = wanted ? 'Disconnect' : 'Connect to printer';
+    $('pickHint').classList.toggle('hidden', wanted);
+    renderChecks();
   }
 
+  var rxChar = null;
+  function onPrinterData(ev) {
+    if (bleTransport.onData) bleTransport.onData(decoder.decode(ev.target.value, { stream: true }));
+  }
   async function openGatt() {
     var server = await device.gatt.connect();
     var service = await server.getPrimaryService(SERVICE);
     var rx = await service.getCharacteristic(FROM_PRINTER);
     txChar = await service.getCharacteristic(TO_PRINTER);
-    rx.addEventListener('characteristicvaluechanged', function (ev) {
-      if (bleTransport.onData) bleTransport.onData(decoder.decode(ev.target.value, { stream: true }));
-    });
+    // Reconnecting can hand back the same object: never listen to it twice, or every answer arrives doubled.
+    if (rxChar) { try { rxChar.removeEventListener('characteristicvaluechanged', onPrinterData); } catch (e) {} }
+    rxChar = rx;
+    rx.addEventListener('characteristicvaluechanged', onPrinterData);
     await rx.startNotifications();
   }
 
   function nowWatching() {
     connected = true;
+    checks = { answering: null, problems: null, memory: null };
     setStatus('on', 'Watching ' + printerName + ' for tickets');
     log('Connected to ' + printerName);
     $('health').classList.add('hidden');   // the printer reports any current problem again after connecting
@@ -1738,13 +1831,19 @@
       nowWatching();
       return;
     }
+    var step = 'list';
     try {
       setStatus('busy', 'Choose your printer…');
-      var picked = await navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: [SERVICE] });
+      // Normally every nearby Bluetooth device is listed. If the browser refuses that, the next
+      // tap asks only for devices that advertise Zebra's print service.
+      var picked = await navigator.bluetooth.requestDevice(listByService
+        ? { filters: [{ services: [SERVICE] }] }
+        : { acceptAllDevices: true, optionalServices: [SERVICE] });
+      step = 'connect';
       if (device && picked.id !== device.id) monitor.reset();
       device = picked;
       printerName = device.name || 'printer';
-      device.addEventListener('gattserverdisconnected', onDisconnected);
+      device.ongattserverdisconnected = onDisconnected;
       wanted = true;
       setStatus('busy', 'Connecting to ' + printerName + '…');
       await openGatt();
@@ -1753,10 +1852,21 @@
     } catch (e) {
       wanted = false;
       var msg = String(e && e.message || e);
-      if (/cancel/i.test(msg)) setStatus('', 'Not connected');
-      else if (/service/i.test(msg)) setStatus('lost', 'That device isn\'t a Zebra printer. Try another one.');
-      else setStatus('lost', 'Couldn\'t connect. Try again.');
-      log('Connect failed: ' + msg);
+      var kind = String(e && e.name || '');
+      if (step === 'connect') { try { device.gatt.disconnect(); } catch (err) {} }
+      if (step === 'list' && (/cancel/i.test(msg) || kind === 'NotFoundError')) {
+        setStatus('', 'Not connected');
+      } else if (step === 'list') {
+        listByService = !listByService;
+        setStatus('lost', 'Couldn\'t open the list of devices. Tap Connect to try another way.');
+      } else if (/auth|encrypt|pair|security|insufficient/i.test(msg) || kind === 'SecurityError') {
+        setStatus('lost', 'The printer wants to pair. Accept the pairing request on the phone, then tap Connect again.');
+      } else if (kind === 'NotFoundError' || /service/i.test(msg)) {
+        setStatus('lost', 'That device doesn\'t offer Zebra\'s print service. Pick a different one from the list.');
+      } else {
+        setStatus('lost', 'Couldn\'t connect. Move closer to the printer and tap Connect again.');
+      }
+      log('Connect failed at "' + step + '": ' + (kind ? kind + ': ' : '') + msg);
     }
   }
 
@@ -1830,10 +1940,12 @@
     if (document.visibilityState !== 'visible') {
       // Out of sight (phone locked, another app): this page can't look after the printer,
       // so tell it to stop keeping copies until the page is back.
-      if (connected && state.pauseHidden && state.readTickets) monitor.pause();
+      if (connected && state.pauseHidden && state.readTickets) { monitor.pause(); renderChecks(); }
       return;
     }
+    wakeSound();
     if (monitor.paused) { monitor.resume(); if (connected) log('Back in view: reading tickets again'); }
+    renderChecks();
     if (!wanted) return;
     keepAwake();
     if (!DEMO && device && !device.gatt.connected) onDisconnected();
@@ -1944,6 +2056,7 @@
   bindCheck('optRead', 'readTickets', function () {
     if (state.readTickets) { monitor.allowCapture(); $('memWarn').classList.add('hidden'); }
     monitor.applyCapture();
+    renderChecks();
     if (connected) { if (state.readTickets) markOpen(); else markClean(); }
   });
   bindCheck('optPause', 'pauseHidden');
@@ -1961,7 +2074,10 @@
       'the page clears the copies straight away, or switch the printer off and on.'));
     $('leftOn').classList.remove('hidden');
   }
-  bindCheck('optHealth', 'healthAlerts', function () { if (!state.healthAlerts) $('health').classList.add('hidden'); });
+  bindCheck('optHealth', 'healthAlerts', function () {
+    if (!state.healthAlerts) $('health').classList.add('hidden');
+    renderChecks();
+  });
   $('moreTickets').addEventListener('click', function () { showAllTickets = true; renderTickets(); });
   $('clearHistory').addEventListener('click', function () {
     if (!window.confirm('Delete all saved tickets, notes and stats from this phone?')) return;

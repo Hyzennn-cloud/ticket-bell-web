@@ -214,7 +214,7 @@
     this.emit = opts.onEvent || function () {};
     this.timing = Object.assign(
       { quietMs: 4000, rawFirstMs: 4000, rawIdleMs: 1000, tidyMs: 10 * 60 * 1000, fullTidyMs: 60 * 60 * 1000,
-        staleMs: 20000, healthMs: 10000, confirmMs: 2000 },
+        staleMs: 20000, healthMs: 10000, confirmMs: 2000, silentMs: 12000 },
       opts.timing
     );
     this.lowMemoryBytes = opts.lowMemoryBytes || 2000000;   // stop reading tickets below this much free memory
@@ -234,6 +234,11 @@
     this.expect = [];              // what kind of answer each question still out is waiting for
     this.captureWaiters = [];
     this.initialCheck = false;
+    this.startedAt = 0;
+    this.lastHeardAt = 0;          // when the printer last sent anything
+    this.heard = false;
+    this.silent = false;
+    this.logged = {};              // first-time details written to the log, to help diagnose a new printer
     this.transport = null;
     this.running = false;
     this.busy = false;
@@ -259,6 +264,10 @@
     this.healthKey = null;      // report the printer's state afresh on every connect
     this.lastHealth = 0;
     this.staleSeen = false;
+    this.startedAt = Date.now();
+    this.lastHeardAt = 0;
+    this.heard = false;
+    this.silent = false;
     // First connection of this session: see whether an earlier visit left capture on, then clear
     // out any copies it left behind.
     var fresh = this.baseline === null && this.pending === 0;
@@ -391,6 +400,11 @@
 
   Monitor.prototype.poll = function () {
     var s = this.settings();
+    // Connected but hearing nothing back: say so, instead of looking like it is working.
+    if (!this.silent && Date.now() - Math.max(this.lastHeardAt, this.startedAt) > this.timing.silentMs) {
+      this.silent = true;
+      this.emit({ type: 'answering', ok: false });
+    }
     if (!this.busy) {
       var tidyDue = this.capturing() && !this.jobT && this.pending === 0 &&
         Date.now() - this.lastTidy > this.timing.tidyMs;
@@ -408,6 +422,12 @@
   };
 
   Monitor.prototype.received = function (s) {
+    this.lastHeardAt = Date.now();
+    if (!this.heard || this.silent) {
+      this.heard = true;
+      this.silent = false;
+      this.emit({ type: 'answering', ok: true });
+    }
     if (this.raw) {
       this.raw.buf += s;
       if (this.raw.buf.length > 500000) this.finishRaw();
@@ -426,7 +446,12 @@
   /** Works out which question an answer belongs to, mostly from what the answer looks like. */
   Monitor.prototype.handleReply = function (value) {
     var status = parseSystemError(value);
-    if (status) { this.answered('status'); this.handleHealth(status); return; }
+    if (status) {
+      this.answered('status');
+      this.logOnce('status', 'Printer status answer: ' + value);
+      this.handleHealth(status);
+      return;
+    }
     if (CAPTURE_STATE_RE.test(value)) { this.answered('capture'); this.handleCaptureState(value.trim().toLowerCase()); return; }
     if (NUMBER_RE.test(value)) { this.answered('counter'); this.handleReading(value); return; }
     // Something else, usually "?" for a setting this printer doesn't have. Go by the order of asking.
@@ -458,8 +483,18 @@
     if (key === this.healthKey) return;
     var first = this.healthKey === null;
     this.healthKey = key;
-    if (first && !status.errors.length && !status.warnings.length) return;   // healthy at connect: say nothing
+    if (first && !status.errors.length && !status.warnings.length) {
+      this.emit({ type: 'healthok' });   // healthy at connect: no alert, just a tick on the setup check
+      return;
+    }
     this.emit({ type: 'health', errors: status.errors, warnings: status.warnings });
+  };
+
+  /** Writes a detail to the log the first time it is seen, so a screenshot shows how this printer answers. */
+  Monitor.prototype.logOnce = function (key, text) {
+    if (this.logged[key]) return;
+    this.logged[key] = true;
+    this.log(text);
   };
 
   Monitor.prototype.handleReading = function (value) {
@@ -533,6 +568,7 @@
     return this.requestRaw(LIST_FILES)
       .then(function (listing) {
         listed = listing;
+        self.logOnce('list', 'Printer file list: ' + (listing.replace(/\s+/g, ' ').trim().slice(0, 240) || '(no answer)'));
         files = captureFiles(listing);
         sizesBefore = fileSizes(listing);
         free = freeBytes(listing);
