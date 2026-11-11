@@ -66,6 +66,44 @@
         background: var(--bg); border-radius: 9px; padding: 10px; max-height: 300px; overflow: auto; margin: 10px 0 0; }
   .notice { border-color: var(--warn); }
   .notice a { color: var(--accent); }
+  h3 { font-size: 15px; margin: 20px 0 0; }
+  .badge { background: var(--accent); color: #fff; border-radius: 999px; padding: 2px 9px; font-size: 12px;
+           letter-spacing: 0; text-transform: none; margin-left: 6px; }
+  .problem { border-color: var(--bad); }
+  .problem strong { color: var(--bad); }
+  li.day { color: var(--muted); font-size: 13px; text-transform: uppercase; letter-spacing: .05em; padding: 14px 0 4px; border-top: 0; }
+  li.tk { display: block; }
+  .tkMain { display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; cursor: pointer; }
+  .tkLabel { font-weight: 400; }
+  .tkMain time { font-weight: 400; }
+  li.tk.vip .tkLabel { font-weight: 700; }
+  li.tk.done .tkLabel { color: var(--muted); font-weight: 400; }
+  .tkSub, .tkNote, .tkDone { color: var(--muted); font-size: 14px; font-weight: 400; margin-top: 2px; }
+  .tkNote { color: var(--text); }
+  .tkActions { display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
+  .tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 12px; }
+  .tile { background: var(--bg); border-radius: 10px; padding: 10px; min-width: 0; }
+  .tile .tl { font-size: 12px; color: var(--muted); }
+  .tile .tv { font-size: 24px; font-weight: 600; }
+  /* Charts: one series, so one colour and no legend. Validated against the card background in both themes. */
+  .viz { --series-1: #2a78d6; --axis: #c3c2b7; }
+  @media (prefers-color-scheme: dark) { .viz { --series-1: #3987e5; --axis: #383835; } }
+  .chart { display: flex; align-items: flex-end; gap: 2px; height: 124px; border-bottom: 1px solid var(--axis); margin-top: 10px; }
+  .chart .col { flex: 1; min-width: 0; height: 100%; display: flex; flex-direction: column; justify-content: flex-end;
+                align-items: center; background: transparent; border: 0; border-radius: 0; padding: 0; color: var(--text);
+                font-weight: 400; }
+  .chart .cap { font-size: 12px; line-height: 16px; white-space: nowrap; visibility: hidden; }
+  .chart .col.sel .cap { visibility: visible; }
+  .chart .bar { width: 100%; max-width: 24px; background: var(--series-1); border-radius: 4px 4px 0 0; }
+  .xlabels { display: flex; gap: 2px; margin-top: 4px; }
+  .xlabels span { flex: 1; min-width: 0; text-align: center; font-size: 11px; color: var(--muted); white-space: nowrap;
+                  overflow: visible; font-variant-numeric: tabular-nums; }
+  table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 15px; }
+  th, td { text-align: left; padding: 7px 0; border-top: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 400; font-size: 13px; border-top: 0; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  details.inner { border: 0; padding: 0; margin: 16px 0 0; background: transparent; }
+  details.inner summary { font-weight: 400; color: var(--accent); }
   .hidden { display: none !important; }
   #overlay { position: fixed; inset: 0; z-index: 10; display: flex; flex-direction: column; align-items: center;
              justify-content: center; text-align: center; padding: 24px; background: #b45309; color: #fff;
@@ -95,6 +133,9 @@
     });
   </script>
 
+  <div id="health" class="card problem hidden" role="alert"></div>
+  <div id="memWarn" class="card problem hidden" role="alert"></div>
+
   <div id="noBle" class="card notice hidden">
     <strong>This browser can't use Bluetooth.</strong>
     <p class="sub">On an iPhone, install the free <b>Bluefy</b> browser from the App Store and open this page in it.
@@ -107,6 +148,10 @@
       <input id="demoName" type="text" placeholder="Name printed on the ticket" autocomplete="off">
       <button id="demoPrint" class="small">Print</button>
     </div>
+    <div class="row" style="margin-top:8px">
+      <button id="demoLabels" class="plain small">Run out of labels</button>
+      <button id="demoLid" class="plain small">Open the lid</button>
+    </div>
     <p class="sub">Nothing here talks to a real printer. Connect below, add a customer, then print a ticket with that name.</p>
   </div>
 
@@ -118,6 +163,7 @@
     </div>
     <div id="reading" class="sub hidden"></div>
     <div id="today" class="sub hidden"></div>
+    <div id="memory" class="sub hidden"></div>
     <div id="awake" class="sub hidden"></div>
     <button id="connect" class="wide">Connect to printer</button>
   </div>
@@ -133,10 +179,41 @@
   </div>
 
   <div class="card">
-    <h2>Recent tickets</h2>
+    <h2>Tickets <span id="waitingBadge" class="badge hidden"></span></h2>
     <ul id="tickets"></ul>
     <p id="noTickets" class="empty">Nothing printed yet.</p>
+    <button id="moreTickets" class="plain small hidden" style="margin-top:10px">Show older tickets</button>
+    <p class="sub">Tap a ticket to add a note. Tickets and notes are kept on this phone for 3 days.</p>
   </div>
+
+  <details id="statsBox" class="viz">
+    <summary>History and stats</summary>
+    <div class="tiles">
+      <div class="tile"><div class="tl">Today</div><div id="stToday" class="tv">0</div></div>
+      <div class="tile"><div class="tl">Yesterday</div><div id="stYesterday" class="tv">0</div></div>
+      <div class="tile"><div class="tl">Last 7 days</div><div id="stWeek" class="tv">0</div></div>
+    </div>
+
+    <h3>Tickets per day, last 7 days</h3>
+    <div id="chartDays" class="chart" role="group" aria-label="Tickets per day, last 7 days"></div>
+    <div id="chartDaysX" class="xlabels" aria-hidden="true"></div>
+    <p id="chartDaysRead" class="sub"></p>
+
+    <h3>Busiest hours, last 7 days</h3>
+    <div id="chartHours" class="chart" role="group" aria-label="Tickets by hour of day, last 7 days"></div>
+    <div id="chartHoursX" class="xlabels" aria-hidden="true"></div>
+    <p id="chartHoursRead" class="sub"></p>
+
+    <h3>Most frequent watched customers, last 30 days</h3>
+    <table id="topTable"></table>
+    <p id="noTop" class="empty">No tickets for watched customers yet.</p>
+
+    <details class="inner">
+      <summary>Show the daily numbers as a table</summary>
+      <table id="daysTable"></table>
+    </details>
+    <button id="clearHistory" class="plain wide">Clear tickets and history</button>
+  </details>
 
   <details>
     <summary>Settings</summary>
@@ -156,8 +233,10 @@
       <input id="optRate" type="range" min="0.6" max="1.4" step="0.05" style="width:100%;margin-top:8px"></label>
     <label class="opt" style="display:block"><span>Voice pitch<small>Left is deeper</small></span>
       <input id="optPitch" type="range" min="0.1" max="1.5" step="0.05" style="width:100%;margin-top:8px"></label>
-    <label class="opt"><span>Read ticket contents<small>Needed to recognise customer names</small></span>
+    <label class="opt"><span>Read ticket contents<small>Needed to recognise names. The printer keeps a short-lived copy of each ticket, which this page deletes.</small></span>
       <input id="optRead" type="checkbox"></label>
+    <label class="opt"><span>Printer problem alerts<small>Out of labels, lid open and similar</small></span>
+      <input id="optHealth" type="checkbox"></label>
     <label class="opt"><span>Check every</span>
       <select id="optPoll"><option value="2000">2 seconds</option><option value="3000">3 seconds</option>
         <option value="5000">5 seconds</option><option value="10000">10 seconds</option></select></label>
@@ -177,7 +256,7 @@
     <pre id="log">—</pre>
   </details>
 
-  <p class="sub" style="text-align:center">Ticket Bell version 6</p>
+  <p class="sub" style="text-align:center">Ticket Bell version 7</p>
 </main>
 
 <div id="overlay" class="hidden" role="alertdialog" aria-live="assertive">
@@ -203,7 +282,115 @@
 
   /** The printer also captures the commands this page sends; drop them. */
   function stripOwnCommands(raw) {
-    return raw.split(/\r?\n/).filter(function (l) { return l.trim().indexOf('! U1') !== 0; }).join('\n');
+    return raw.split(/\r?\n/).filter(function (l) {
+      var t = l.trim();
+      return t.indexOf('! U1') !== 0 && t !== '~HQES';
+    }).join('\n');
+  }
+
+  // ---------- Printer health ----------
+
+  var ERROR_FLAGS = [
+    [0x1, 'Out of labels'], [0x2, 'Out of ribbon'], [0x4, 'Lid is open'], [0x8, 'Cutter fault'],
+    [0x10, 'Printhead too hot'], [0x20, 'Motor too hot'], [0x40, 'Printhead element fault'],
+    [0x80, 'Printhead not detected'], [0x100, 'Invalid firmware configuration'],
+    [0x200, 'Printhead temperature sensor fault']
+  ];
+  var WARNING_FLAGS = [
+    [0x1, 'Needs media calibration'], [0x2, 'Printhead needs cleaning'], [0x4, 'Printhead needs replacing']
+  ];
+  var STATUS_RE = /ERRORS:\s+(\d)\s+([0-9A-Fa-f]{8})\s+([0-9A-Fa-f]{8})[\s\S]*?WARNINGS:\s+(\d)\s+([0-9A-Fa-f]{8})\s+([0-9A-Fa-f]{8})/;
+
+  function decodeFlags(group2, group1, table, unknown) {
+    var out = [], known = 0;
+    table.forEach(function (f) { known |= f[0]; if (group1 & f[0]) out.push(f[1]); });
+    var rest = (group1 & ~known) >>> 0;
+    if (rest || group2) {
+      out.push(unknown + ' (code ' + ('0000000' + (group2 >>> 0).toString(16)).slice(-8) + ' ' +
+        ('0000000' + rest.toString(16)).slice(-8) + ')');
+    }
+    return out;
+  }
+
+  /** Finds the printer's answer to ~HQES in a stream of text. Returns null until it has all arrived. */
+  function parseStatus(text) {
+    var m = STATUS_RE.exec(text);
+    if (!m) return null;
+    return {
+      start: m.index,
+      end: m.index + m[0].length,
+      errors: decodeFlags(parseInt(m[2], 16), parseInt(m[3], 16), ERROR_FLAGS, 'Printer error'),
+      warnings: decodeFlags(parseInt(m[5], 16), parseInt(m[6], 16), WARNING_FLAGS, 'Printer warning')
+    };
+  }
+
+  // ---------- Ticket history ----------
+
+  var KEEP_TICKETS_MS = 3 * 24 * 3600 * 1000;   // the ticket list, with its notes
+  var KEEP_DAYS = 90;                           // daily totals for the stats
+
+  function pad2(n) { return (n < 10 ? '0' : '') + n; }
+  function dayKey(ms) {
+    var d = new Date(ms);
+    return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+  }
+  function daysBefore(ms, days) {
+    var d = new Date(ms);
+    d.setHours(12, 0, 0, 0);            // midday, so clock changes can't skip or repeat a day
+    d.setDate(d.getDate() - days);
+    return d.getTime();
+  }
+  function newHistory() { return { tickets: [], days: {}, seq: 0 }; }
+
+  /** ticket: { time, names, snippet }. Returns the stored entry. */
+  function recordTicket(h, ticket) {
+    h.seq = (h.seq || 0) + 1;
+    var entry = {
+      id: h.seq, time: ticket.time, names: ticket.names.slice(), snippet: ticket.snippet || '',
+      done: false, doneAt: 0, note: ''
+    };
+    h.tickets.unshift(entry);
+    var k = dayKey(ticket.time);
+    var day = h.days[k];
+    if (!day) {
+      day = h.days[k] = { n: 0, w: 0, h: [], c: {} };
+      for (var i = 0; i < 24; i++) day.h.push(0);
+    }
+    day.n++;
+    if (ticket.names.length) day.w++;
+    day.h[new Date(ticket.time).getHours()]++;
+    ticket.names.forEach(function (name) { day.c[name] = (day.c[name] || 0) + 1; });
+    pruneHistory(h, ticket.time);
+    return entry;
+  }
+
+  function pruneHistory(h, now) {
+    h.tickets = h.tickets.filter(function (t) { return now - t.time < KEEP_TICKETS_MS; });
+    var cutoff = dayKey(daysBefore(now, KEEP_DAYS));
+    Object.keys(h.days).forEach(function (k) { if (k < cutoff) delete h.days[k]; });
+  }
+
+  function historyStats(h, now) {
+    var week = [], hours = [], weekTotal = 0, i;
+    for (i = 0; i < 24; i++) hours.push(0);
+    for (i = 6; i >= 0; i--) {
+      var ms = daysBefore(now, i);
+      var day = h.days[dayKey(ms)] || { n: 0, w: 0, h: [], c: {} };
+      week.push({ key: dayKey(ms), time: ms, n: day.n, w: day.w });
+      weekTotal += day.n;
+      for (var hr = 0; hr < 24; hr++) hours[hr] += day.h[hr] || 0;
+    }
+    var counts = {};
+    for (i = 0; i < 30; i++) {
+      var d = h.days[dayKey(daysBefore(now, i))];
+      if (d) Object.keys(d.c).forEach(function (name) { counts[name] = (counts[name] || 0) + d.c[name]; });
+    }
+    var top = Object.keys(counts).map(function (name) { return { name: name, count: counts[name] }; })
+      .sort(function (a, b) { return b.count - a.count || (a.name < b.name ? -1 : 1); }).slice(0, 5);
+    return {
+      today: week[6], yesterday: week[5], week: week, weekTotal: weekTotal, hours: hours, top: top,
+      waiting: h.tickets.filter(function (t) { return t.names.length && !t.done; }).length
+    };
   }
 
   /** opts.partial: an entry also matches inside a longer word ("Smith" finds "Smithson"). */
@@ -242,17 +429,38 @@
   // ---------- Watching the printer ----------
 
   /**
-   * opts.settings(): { customers, readTickets, counterVar, pollMs }
-   * opts.onEvent(e): e.type is 'ticket' | 'reading' | 'log'
+   * opts.settings(): { customers, readTickets, healthAlerts, counterVar, pollMs }
+   * opts.onEvent(e): e.type is 'ticket' | 'reading' | 'health' | 'memory' | 'lowmemory' | 'log'
    * A transport has send(text) -> Promise and an onData(text) callback slot.
+   *
+   * What this does to the printer:
+   *  - asks for its label counter and its status (read-only questions);
+   *  - if ticket reading is on, switches on "input capture", which makes the printer keep a
+   *    copy of what it receives in files E:IN###.DMP. Those copies are deleted after every
+   *    ticket, on a timer, on connect, and on disconnect, and capture is switched off if the
+   *    printer's free memory gets low. Capture also switches itself off when the printer restarts.
+   * Nothing else on the printer is changed.
    */
+  var CAPTURE_ON = '! U1 setvar "input.capture" "run"\r\n';
+  var CAPTURE_OFF = '! U1 setvar "input.capture" "off"\r\n';
+  var DELETE_ALL = '! U1 do "file.delete" "E:IN*.DMP"\r\n';
+
   function Monitor(opts) {
     this.settings = opts.settings;
     this.emit = opts.onEvent || function () {};
     this.timing = Object.assign(
-      { quietMs: 4000, rawFirstMs: 4000, rawIdleMs: 1000, tidyMs: 20 * 60 * 1000 },
+      { quietMs: 4000, rawFirstMs: 4000, rawIdleMs: 1000, tidyMs: 10 * 60 * 1000, fullTidyMs: 60 * 60 * 1000,
+        staleMs: 20000, healthMs: 10000 },
       opts.timing
     );
+    this.lowMemoryBytes = opts.lowMemoryBytes || 2000000;   // stop reading tickets below this much free memory
+    this.tidyBytes = opts.tidyBytes || 200000;              // clear the copies once they pass this size
+    this.lastFullTidy = Date.now();
+    this.captureBlocked = false;   // set when the printer's memory got low
+    this.staleSeen = false;
+    this.hasErrors = false;
+    this.healthKey = null;
+    this.lastHealth = 0;
     this.transport = null;
     this.running = false;
     this.busy = false;
@@ -274,16 +482,34 @@
     this.running = true;
     this.busy = false;
     this.rx = '';
-    this.applyCapture();
-    this.lastTidy = Date.now();
+    this.healthKey = null;      // report the printer's state afresh on every connect
+    this.lastHealth = 0;
+    this.staleSeen = false;
+    // First connection of this session: clear out copies an earlier session may have left behind.
+    this.applyCapture(this.baseline === null && this.pending === 0);
+    // First routine check soon after connecting, so the page can show the printer's free memory.
+    this.lastTidy = Date.now() - this.timing.tidyMs + Math.min(15000, this.timing.tidyMs);
     if (this.pending > 0 && !this.jobT) this.armJob();   // job interrupted by a disconnect
     this.schedulePoll(50);
   };
 
+  /** Connection lost: stop asking, keep our place so we can catch up after reconnecting. */
   Monitor.prototype.stop = function () {
     this.running = false;
     clearTimeout(this.pollT);
     this.finishRaw();
+  };
+
+  /** Disconnecting on purpose: leave the printer as we found it. Resolves when the commands are sent. */
+  Monitor.prototype.shutdown = function () {
+    var self = this;
+    clearTimeout(this.pollT);
+    clearTimeout(this.jobT);
+    this.jobT = null;
+    this.pending = 0;
+    this.finishRaw();
+    this.running = false;
+    return this.send(CAPTURE_OFF).then(function () { return self.send(DELETE_ALL); });
   };
 
   /** Forget the counter, e.g. when switching printers. */
@@ -295,16 +521,19 @@
     this.jobT = null;
   };
 
-  Monitor.prototype.applyCapture = function () {
+  Monitor.prototype.applyCapture = function (clearFirst) {
     if (!this.running) return;
-    if (this.settings().readTickets) {
-      // Capture switches itself off when the printer restarts, so this runs on every connect.
-      this.send('! U1 setvar "input.capture" "run"\r\n');
-    } else {
-      this.send('! U1 setvar "input.capture" "off"\r\n');
-      this.send('! U1 do "file.delete" "E:IN*.DMP"\r\n');
+    var on = this.settings().readTickets && !this.captureBlocked;
+    if (!on || clearFirst) {
+      this.send(CAPTURE_OFF);
+      this.send(DELETE_ALL);
     }
+    // Capture switches itself off when the printer restarts, so this runs on every connect.
+    if (on) this.send(CAPTURE_ON);
   };
+
+  /** The user switched ticket reading back on: allow it again even after a low-memory stop. */
+  Monitor.prototype.allowCapture = function () { this.captureBlocked = false; };
 
   Monitor.prototype.log = function (text) { this.emit({ type: 'log', text: text }); };
 
@@ -326,9 +555,18 @@
   Monitor.prototype.poll = function () {
     var s = this.settings();
     if (!this.busy) {
-      var tidyDue = s.readTickets && !this.jobT && Date.now() - this.lastTidy > this.timing.tidyMs;
-      if (tidyDue) this.readCaptured(true);
-      else this.send('! U1 getvar "' + s.counterVar + '"\r\n');
+      var capturing = s.readTickets && !this.captureBlocked;
+      var tidyDue = capturing && !this.jobT && this.pending === 0 &&
+        Date.now() - this.lastTidy > this.timing.tidyMs;
+      if (tidyDue) {
+        this.readCaptured(true);
+      } else {
+        this.send('! U1 getvar "' + s.counterVar + '"\r\n');
+        if (s.healthAlerts && Date.now() - this.lastHealth >= this.timing.healthMs) {
+          this.lastHealth = Date.now();
+          this.send('~HQES\r\n');
+        }
+      }
     }
     this.schedulePoll(s.pollMs);
   };
@@ -341,12 +579,28 @@
       return;
     }
     this.rx += s;
+    var status = parseStatus(this.rx);
+    if (status) {
+      this.rx = this.rx.slice(0, status.start) + this.rx.slice(status.end);
+      this.handleHealth(status);
+    }
     var m;
     while ((m = /"([^"]*)"/.exec(this.rx))) {
       this.rx = this.rx.slice(m.index + m[0].length);
       this.handleReading(m[1]);
     }
     if (this.rx.length > 4096) this.rx = '';
+  };
+
+  /** Reports printer problems only when they change. */
+  Monitor.prototype.handleHealth = function (status) {
+    this.hasErrors = status.errors.length > 0;
+    var key = status.errors.join('|') + '#' + status.warnings.join('|');
+    if (key === this.healthKey) return;
+    var first = this.healthKey === null;
+    this.healthKey = key;
+    if (first && !status.errors.length && !status.warnings.length) return;   // healthy at connect: say nothing
+    this.emit({ type: 'health', errors: status.errors, warnings: status.warnings });
   };
 
   Monitor.prototype.handleReading = function (value) {
@@ -380,7 +634,7 @@
     var count = this.pending;
     this.pending = 0;
     this.log('Ticket printed (counter +' + count + ')');
-    if (!this.settings().readTickets) {
+    if (!this.settings().readTickets || this.captureBlocked) {
       this.emit({ type: 'ticket', matches: [], text: '', raw: '', isImage: false, read: false });
       return Promise.resolve();
     }
@@ -399,9 +653,25 @@
     this.lastTidy = Date.now();
     var files = [];
     var raw = '';
+    var free = null;
+    var skipRead = false;
     return this.requestRaw('! U1 do "file.dir" "E:"\r\n')
       .then(function (listing) {
         files = captureFiles(listing);
+        var fm = /(\d+)\s+bytes\s+free/i.exec(listing);
+        if (fm) { free = parseInt(fm[1], 10); self.emit({ type: 'memory', free: free }); }
+        if (tidy) {
+          // A routine check only looks at the list. The copies are read and cleared only once they
+          // have grown, which keeps the printer's workload low and makes it very unlikely that a
+          // clean-up lands on the same second as an arriving ticket.
+          var sizes = [], sm, sizeRe = /IN\d{3}\.DMP\s+(\d+)/gi;
+          while ((sm = sizeRe.exec(listing))) sizes.push(parseInt(sm[1], 10));
+          var total = sizes.length === files.length ? sizes.reduce(function (a, b) { return a + b; }, 0) : null;
+          var grown = total !== null ? total > self.tidyBytes
+                                     : Date.now() - self.lastFullTidy > self.timing.fullTidyMs;
+          if (!grown && !self.staleSeen) { skipRead = true; return; }
+        }
+        self.lastFullTidy = Date.now();
         return files.reduce(function (p, f) {
           return p.then(function () {
             return self.requestRaw('! U1 do "file.type" "E:' + f + '"\r\n').then(function (c) { raw += '\n' + c; });
@@ -410,11 +680,21 @@
       })
       .then(function () {
         if (!self.running) return false;
+        if (skipRead) { self.checkMemory(free); return true; }
         var res = analyze(raw, self.settings().customers, { partial: self.settings().partial });
-        if (tidy && res.hasJobData) return true;          // a ticket is arriving; leave it for the job read
+        if (tidy && res.hasJobData && (!self.staleSeen || self.hasErrors)) {
+          // Probably a ticket that is arriving right now (or waiting on a printer problem), so leave it
+          // for the ticket read. Look again shortly: if no ticket was counted by then it is a leftover,
+          // and the next pass deletes it.
+          self.staleSeen = true;
+          self.lastTidy = Date.now() - self.timing.tidyMs + self.timing.staleMs;
+          return true;
+        }
+        self.staleSeen = false;
         return files.reduce(function (p, f) {
           return p.then(function () { return self.send('! U1 do "file.delete" "E:' + f + '"\r\n'); });
         }, Promise.resolve()).then(function () {
+          self.checkMemory(free);
           if (!tidy) {
             self.emit({
               type: 'ticket', matches: res.matches, text: res.text, isImage: res.isImage,
@@ -426,6 +706,16 @@
       })
       .then(function (done) { self.rx = ''; self.busy = false; return done; },
             function (e) { self.rx = ''; self.busy = false; self.log('Read failed: ' + e); return false; });
+  };
+
+  /** Safety stop: never let ticket copies fill the printer. */
+  Monitor.prototype.checkMemory = function (free) {
+    if (free === null || free >= this.lowMemoryBytes || this.captureBlocked) return;
+    if (!this.settings().readTickets) return;
+    this.captureBlocked = true;
+    this.send(CAPTURE_OFF);
+    this.send(DELETE_ALL);
+    this.emit({ type: 'lowmemory', free: free });
   };
 
   Monitor.prototype.requestRaw = function (command) {
@@ -526,21 +816,35 @@
     this.files = {};
     this.capture = false;
     this.onData = null;
+    this.errorBits = 0;          // e.g. 0x1 out of labels, 0x4 lid open
+    this.warningBits = 0;
+    this.waiting = 0;            // labels received but not printed because of a problem
+    this.flashBytes = 62914560;  // free space with no capture files
   }
+
+  FakePrinter.prototype.freeBytes = function () {
+    var self = this;
+    return this.flashBytes - Object.keys(this.files).reduce(function (n, f) { return n + self.files[f].length; }, 0);
+  };
 
   FakePrinter.prototype.send = function (text) {
     var self = this;
     if (this.capture) this.append(text);
     text.split(/\r?\n/).forEach(function (line) {
       var m;
-      if ((m = /getvar "([^"]+)"/.exec(line))) {
+      if (line.trim() === '~HQES') {
+        var hex = function (n) { return ('0000000' + n.toString(16)).slice(-8); };
+        self.reply('\x02\r\n  PRINTER STATUS\r\n   ERRORS:         ' + (self.errorBits ? 1 : 0) + ' 00000000 ' +
+          hex(self.errorBits) + '\r\n   WARNINGS:       ' + (self.warningBits ? 1 : 0) + ' 00000000 ' +
+          hex(self.warningBits) + '\r\n\x03');
+      } else if ((m = /getvar "([^"]+)"/.exec(line))) {
         self.reply('"' + self.count + '"');
       } else if ((m = /setvar "input\.capture" "(\w+)"/.exec(line))) {
         self.capture = m[1] === 'run';
       } else if (/do "file\.dir"/.test(line)) {
         var out = '- DIR E:*.*\r\n';
         Object.keys(self.files).forEach(function (f) { out += '* E:' + f + ' ' + self.files[f].length + '\r\n'; });
-        self.reply(out + '- 62914560 bytes free E: ONBOARD FLASH\r\n');
+        self.reply(out + '- ' + self.freeBytes() + ' bytes free E: ONBOARD FLASH\r\n');
       } else if ((m = /do "file\.type" "E:([^"]+)"/.exec(line))) {
         self.reply(self.files[m[1]] || '');
       } else if ((m = /do "file\.delete" "E:([^"]+)"/.exec(line))) {
@@ -555,10 +859,17 @@
     this.files['IN001.DMP'] = (this.files['IN001.DMP'] || '') + text;
   };
 
-  /** A ticket arriving over the network. */
+  /** A ticket arriving over the network. With a printer problem it is received but can't print yet. */
   FakePrinter.prototype.print = function (data, labels) {
     if (this.capture) this.append(data + '\r\n');
-    this.count += labels || 1;
+    if (this.errorBits) this.waiting += labels || 1;
+    else this.count += labels || 1;
+  };
+
+  /** Set or clear a problem. Clearing it prints whatever was waiting. */
+  FakePrinter.prototype.setProblem = function (errorBits) {
+    this.errorBits = errorBits;
+    if (!errorBits && this.waiting) { this.count += this.waiting; this.waiting = 0; }
   };
 
   FakePrinter.prototype.reply = function (text) {
@@ -572,7 +883,9 @@
 
   var api = {
     normalize: normalize, analyze: analyze, captureFiles: captureFiles,
-    stripOwnCommands: stripOwnCommands, Monitor: Monitor, Announcer: Announcer, FakePrinter: FakePrinter
+    stripOwnCommands: stripOwnCommands, parseStatus: parseStatus,
+    newHistory: newHistory, recordTicket: recordTicket, pruneHistory: pruneHistory, historyStats: historyStats,
+    dayKey: dayKey, Monitor: Monitor, Announcer: Announcer, FakePrinter: FakePrinter
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.TicketBell = api;
@@ -592,7 +905,7 @@
   // ---------- Saved settings ----------
   var state = {
     customers: [], notifyOthers: true, speak: true, intercom: true, readTickets: true, partial: true,
-    times: 2, voice: '', rate: 0.95, pitch: 0.5,
+    times: 2, voice: '', rate: 0.95, pitch: 0.5, healthAlerts: true,
     pollMs: 3000, counterVar: 'odometer.total_label_count'
   };
   var GAP_MS = 10000;      // quiet time between repeats of an announcement
@@ -600,7 +913,6 @@
   try { Object.assign(state, JSON.parse(localStorage.getItem('ticketbell') || '{}')); } catch (e) {}
   function save() { try { localStorage.setItem('ticketbell', JSON.stringify(state)); } catch (e) {} }
 
-  var tickets = [];
   var logLines = [];
   function clock() { return new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); }
   function log(text) {
@@ -765,30 +1077,249 @@
     $('odoWrap').classList.remove('hidden');
   }
 
-  function todayKey() { var d = new Date(); return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate(); }
-  var tally = { date: todayKey(), tickets: 0, watched: 0 };
+  // ---------- Ticket list, notes and history (saved on this phone) ----------
+  var hist = TB.newHistory();
   try {
-    var savedTally = JSON.parse(localStorage.getItem('ticketbell-today') || 'null');
-    if (savedTally && savedTally.date === tally.date) tally = savedTally;
+    var savedHist = JSON.parse(localStorage.getItem('ticketbell-history') || 'null');
+    if (savedHist && savedHist.tickets && savedHist.days) hist = savedHist;
   } catch (e) {}
-  function renderTally() {
-    $('today').textContent = 'Today: ' + tally.tickets + (tally.tickets === 1 ? ' ticket' : ' tickets') +
-      ', ' + tally.watched + ' for watched customers';
-    $('today').classList.toggle('hidden', tally.tickets === 0);
+  TB.pruneHistory(hist, Date.now());
+  function saveHist() { try { localStorage.setItem('ticketbell-history', JSON.stringify(hist)); } catch (e) {} }
+
+  var openTicketId = null;      // the ticket whose note editor is open
+  var draftNote = '';
+  var showAllTickets = false;
+  var selDay = 6, selHour = -1; // which chart columns show their value
+
+  function plural(n, word) { return n + ' ' + word + (n === 1 ? '' : 's'); }
+  function timeOf(ms) { return new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); }
+  function dayName(ms, long) {
+    var key = TB.dayKey(ms), now = Date.now();
+    if (key === TB.dayKey(now)) return 'Today';
+    if (key === TB.dayKey(now - 24 * 3600 * 1000)) return 'Yesterday';
+    return new Date(ms).toLocaleDateString([], long ? { weekday: 'long', day: 'numeric', month: 'short' }
+                                                    : { weekday: 'short', day: 'numeric', month: 'short' });
   }
-  function countTicket(watched) {
-    if (tally.date !== todayKey()) tally = { date: todayKey(), tickets: 0, watched: 0 };
-    tally.tickets++;
-    if (watched) tally.watched++;
-    try { localStorage.setItem('ticketbell-today', JSON.stringify(tally)); } catch (e) {}
-    renderTally();
+  function hourName(h) { return (h % 12 === 0 ? 12 : h % 12) + (h < 12 ? ' AM' : ' PM'); }
+  function el(tag, cls, text) {
+    var node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (text !== undefined) node.textContent = text;
+    return node;
+  }
+
+  function renderTickets() {
+    var ul = $('tickets');
+    var hadFocus = document.activeElement && document.activeElement.id === 'noteInput';
+    ul.textContent = '';
+    var list = showAllTickets ? hist.tickets : hist.tickets.slice(0, 25);
+    var lastDay = '';
+    list.forEach(function (t) {
+      var day = dayName(t.time, true);
+      if (day !== lastDay) { ul.appendChild(el('li', 'day', day)); lastDay = day; }
+      var vip = t.names.length > 0;
+      var li = el('li', 'tk' + (vip ? ' vip' : '') + (t.done ? ' done' : ''));
+
+      var main = el('div', 'tkMain');
+      main.setAttribute('role', 'button');
+      var text = el('div');
+      text.appendChild(el('div', 'tkLabel', vip ? '⭐ ' + t.names.join(', ') : 'Other ticket'));
+      if (t.snippet) text.appendChild(el('div', 'tkSub', t.snippet));
+      if (t.note) text.appendChild(el('div', 'tkNote', '📝 ' + t.note));
+      if (t.done) text.appendChild(el('div', 'tkDone', '✓ Done at ' + timeOf(t.doneAt)));
+      main.appendChild(text);
+      main.appendChild(el('time', '', timeOf(t.time)));
+      main.addEventListener('click', function () {
+        openTicketId = openTicketId === t.id ? null : t.id;
+        draftNote = t.note || '';
+        renderTickets();
+      });
+      li.appendChild(main);
+
+      var open = openTicketId === t.id;
+      if (open || (vip && !t.done)) {
+        var actions = el('div', 'tkActions');
+        if (open) {
+          var input = el('input');
+          input.type = 'text';
+          input.id = 'noteInput';
+          input.maxLength = 200;
+          input.placeholder = 'Add a note';
+          input.value = draftNote;
+          input.style.flex = '1';
+          input.addEventListener('input', function () { draftNote = input.value; });
+          var saveNote = function () {
+            t.note = draftNote.trim().slice(0, 200);
+            openTicketId = null;
+            saveHist();
+            renderTickets();
+          };
+          input.addEventListener('keydown', function (ev) { if (ev.key === 'Enter') saveNote(); });
+          var saveBtn = el('button', 'small', 'Save note');
+          saveBtn.addEventListener('click', saveNote);
+          actions.appendChild(input);
+          actions.appendChild(saveBtn);
+        }
+        if (!t.done && (vip || open)) {
+          var doneBtn = el('button', 'small' + (open ? ' plain' : ''), 'Done');
+          doneBtn.addEventListener('click', function () {
+            if (open) t.note = draftNote.trim().slice(0, 200);
+            t.done = true;
+            t.doneAt = Date.now();
+            openTicketId = null;
+            saveHist();
+            renderTickets();
+          });
+          actions.appendChild(doneBtn);
+        } else if (t.done && open) {
+          var undoBtn = el('button', 'small plain', 'Not done');
+          undoBtn.addEventListener('click', function () {
+            t.done = false;
+            t.doneAt = 0;
+            saveHist();
+            renderTickets();
+          });
+          actions.appendChild(undoBtn);
+        }
+        li.appendChild(actions);
+      }
+      ul.appendChild(li);
+    });
+    $('noTickets').classList.toggle('hidden', hist.tickets.length > 0);
+    $('moreTickets').classList.toggle('hidden', showAllTickets || hist.tickets.length <= 25);
+    if (hadFocus && openTicketId !== null) { try { $('noteInput').focus(); } catch (e) {} }
+    renderStats();
+  }
+
+  // ---------- Stats ----------
+  function drawChart(boxId, axisId, values, selected, describe, axisLabel, onSelect) {
+    var box = $(boxId), axis = $(axisId);
+    box.textContent = '';
+    axis.textContent = '';
+    var max = Math.max.apply(null, values);
+    values.forEach(function (v, i) {
+      var col = el('button', 'col' + (i === selected ? ' sel' : ''));
+      col.type = 'button';
+      col.setAttribute('aria-label', describe(i));
+      col.appendChild(el('span', 'cap', String(v)));
+      var bar = el('span', 'bar');
+      bar.style.height = (max ? Math.round(v / max * 100) : 0) + 'px';
+      col.appendChild(bar);
+      col.addEventListener('click', function () { onSelect(i); });
+      box.appendChild(col);
+      axis.appendChild(el('span', '', axisLabel(i)));
+    });
+  }
+
+  function renderStats() {
+    var st = TB.historyStats(hist, Date.now());
+
+    $('today').textContent = 'Today: ' + plural(st.today.n, 'ticket') + ', ' + st.today.w + ' for watched customers';
+    $('today').classList.toggle('hidden', st.today.n === 0);
+    $('waitingBadge').textContent = st.waiting + ' waiting';
+    $('waitingBadge').classList.toggle('hidden', st.waiting === 0);
+
+    $('stToday').textContent = String(st.today.n);
+    $('stYesterday').textContent = String(st.yesterday.n);
+    $('stWeek').textContent = String(st.weekTotal);
+
+    var describeDay = function (i) {
+      var d = st.week[i];
+      return dayName(d.time) + ': ' + plural(d.n, 'ticket') + ', ' + d.w + ' for watched customers';
+    };
+    drawChart('chartDays', 'chartDaysX', st.week.map(function (d) { return d.n; }), selDay, describeDay,
+      function (i) { return new Date(st.week[i].time).toLocaleDateString([], { weekday: 'short' }); },
+      function (i) { selDay = i; renderStats(); });
+    $('chartDaysRead').textContent = st.weekTotal ? describeDay(selDay) + '. Tap a bar to see another day.'
+                                                  : 'No tickets in the last 7 days.';
+
+    var peak = st.hours.indexOf(Math.max.apply(null, st.hours));
+    var hour = selHour >= 0 ? selHour : peak;
+    var describeHour = function (i) {
+      return hourName(i) + ' to ' + hourName((i + 1) % 24) + ': ' + plural(st.hours[i], 'ticket');
+    };
+    drawChart('chartHours', 'chartHoursX', st.hours, st.weekTotal ? hour : -1, describeHour,
+      function (i) { return i % 6 === 0 ? hourName(i).replace(' ', '').toLowerCase().replace('m', '') : ''; },
+      function (i) { selHour = i; renderStats(); });
+    $('chartHoursRead').textContent = st.weekTotal
+      ? describeHour(hour) + (selHour < 0 ? ' (the busiest hour)' : '') + '. Tap a bar to see another hour.'
+      : '';
+
+    var top = $('topTable');
+    top.textContent = '';
+    if (st.top.length) {
+      var head = el('tr');
+      head.appendChild(el('th', '', 'Customer'));
+      head.appendChild(el('th', 'num', 'Tickets'));
+      top.appendChild(head);
+      st.top.forEach(function (c) {
+        var row = el('tr');
+        row.appendChild(el('td', '', c.name));
+        row.appendChild(el('td', 'num', String(c.count)));
+        top.appendChild(row);
+      });
+    }
+    $('noTop').classList.toggle('hidden', st.top.length > 0);
+
+    var table = $('daysTable');
+    table.textContent = '';
+    var th = el('tr');
+    th.appendChild(el('th', '', 'Day'));
+    th.appendChild(el('th', 'num', 'Tickets'));
+    th.appendChild(el('th', 'num', 'Watched'));
+    table.appendChild(th);
+    st.week.slice().reverse().forEach(function (d) {
+      var row = el('tr');
+      row.appendChild(el('td', '', dayName(d.time)));
+      row.appendChild(el('td', 'num', String(d.n)));
+      row.appendChild(el('td', 'num', String(d.w)));
+      table.appendChild(row);
+    });
+  }
+
+  // ---------- Printer problems and memory ----------
+  function onHealth(e) {
+    var box = $('health');
+    box.textContent = '';
+    if (!e.errors.length && !e.warnings.length) {
+      box.classList.add('hidden');
+      log('Printer is OK again');
+      return;
+    }
+    if (e.errors.length) {
+      box.appendChild(el('strong', '', '⚠️ Printer problem: ' + e.errors.join(', ')));
+      box.appendChild(el('div', 'sub', 'Tickets can\'t print until this is fixed. This message clears by itself.'));
+      log('Printer problem: ' + e.errors.join(', '));
+      chime('lost');
+      say('Printer problem. ' + e.errors.join('. ') + '.', 1000);
+    }
+    if (e.warnings.length) box.appendChild(el('div', 'sub', 'Printer notice: ' + e.warnings.join(', ')));
+    box.classList.remove('hidden');
+  }
+  function megabytes(bytes) { return (bytes / 1048576).toFixed(1) + ' MB'; }
+  function onLowMemory(e) {
+    state.readTickets = false;
+    save();
+    $('optRead').checked = false;
+    var box = $('memWarn');
+    box.textContent = '';
+    box.appendChild(el('strong', '', '⚠️ Printer memory is low (' + megabytes(e.free) + ' free)'));
+    box.appendChild(el('div', 'sub', 'To protect the printer, ticket reading has been switched off and its saved copies ' +
+      'removed. Tickets are still announced, without names. Turn "Read ticket contents" back on in Settings to try again.'));
+    box.classList.remove('hidden');
+    log('Printer memory low (' + megabytes(e.free) + ' free): ticket reading switched off');
+    chime('lost');
   }
 
   function onTicket(e) {
     var vip = e.matches.length > 0;
-    countTicket(vip);
-    tickets.unshift({ time: clock(), label: vip ? '⭐ ' + e.matches.join(', ') : 'Other ticket', vip: vip });
-    tickets.length = Math.min(tickets.length, 30);
+    var snippet = '';
+    if (e.read && !e.isImage) {
+      snippet = e.text.split(String.fromCharCode(10)).map(function (l) { return l.trim(); })
+        .filter(Boolean).slice(0, 2).join(' · ').slice(0, 70);
+    }
+    TB.recordTicket(hist, { time: Date.now(), names: e.matches, snippet: snippet });
+    saveHist();
     renderTickets();
 
     if (!state.readTickets) $('lastNote').textContent = 'Ticket reading is off.';
@@ -813,6 +1344,12 @@
     onEvent: function (e) {
       if (e.type === 'log') log(e.text);
       else if (e.type === 'ticket') onTicket(e);
+      else if (e.type === 'health') onHealth(e);
+      else if (e.type === 'lowmemory') onLowMemory(e);
+      else if (e.type === 'memory') {
+        $('memory').textContent = 'Printer memory free: ' + megabytes(e.free);
+        $('memory').classList.remove('hidden');
+      }
       else if (e.type === 'reading') {
         var m = /^\s*(\d[\d,]*)/.exec(e.value);
         if (m) {
@@ -871,6 +1408,7 @@
     connected = true;
     setStatus('on', 'Watching ' + printerName + ' for tickets');
     log('Connected to ' + printerName);
+    $('health').classList.add('hidden');   // the printer reports any current problem again after connecting
     monitor.start();
   }
 
@@ -905,12 +1443,18 @@
     }
   }
 
-  function disconnect() {
+  async function disconnect() {
     wanted = false; connected = false;
-    monitor.stop();
+    setStatus('busy', 'Disconnecting…');
+    // Leave the printer as we found it: capture off, saved copies deleted. Don't wait forever.
+    try {
+      await Promise.race([monitor.shutdown(), new Promise(function (r) { setTimeout(r, 3000); })]);
+    } catch (e) {}
     try { if (device && device.gatt.connected) device.gatt.disconnect(); } catch (e) {}
     txChar = null;
+    $('health').classList.add('hidden');
     setStatus('', 'Not connected');
+    log('Disconnected. Ticket copies on the printer were cleared.');
   }
 
   function onDisconnected() {
@@ -973,18 +1517,6 @@
     });
     $('noCustomers').classList.toggle('hidden', state.customers.length > 0);
   }
-  function renderTickets() {
-    var ul = $('tickets');
-    ul.textContent = '';
-    tickets.forEach(function (t) {
-      var li = document.createElement('li');
-      if (t.vip) li.className = 'vip';
-      var span = document.createElement('span'); span.textContent = t.label;
-      var time = document.createElement('time'); time.textContent = t.time;
-      li.appendChild(span); li.appendChild(time); ul.appendChild(li);
-    });
-    $('noTickets').classList.toggle('hidden', tickets.length > 0);
-  }
   function addCustomer() {
     var name = $('newName').value.trim();
     var exists = state.customers.some(function (c) { return TB.normalize(c) === TB.normalize(name); });
@@ -1015,7 +1547,20 @@
   $('optVoice').addEventListener('change', function () { state.voice = $('optVoice').value; save(); });
   fillVoices();
   if (window.speechSynthesis && speechSynthesis.addEventListener) speechSynthesis.addEventListener('voiceschanged', fillVoices);
-  bindCheck('optRead', 'readTickets', function () { monitor.applyCapture(); });
+  bindCheck('optRead', 'readTickets', function () {
+    if (state.readTickets) { monitor.allowCapture(); $('memWarn').classList.add('hidden'); }
+    monitor.applyCapture();
+  });
+  bindCheck('optHealth', 'healthAlerts', function () { if (!state.healthAlerts) $('health').classList.add('hidden'); });
+  $('moreTickets').addEventListener('click', function () { showAllTickets = true; renderTickets(); });
+  $('clearHistory').addEventListener('click', function () {
+    if (!window.confirm('Delete all saved tickets, notes and stats from this phone?')) return;
+    hist = TB.newHistory();
+    saveHist();
+    renderTickets();
+  });
+  // Closing the page: try to switch capture off on the way out. The browser may not allow time for it.
+  window.addEventListener('pagehide', function () { if (connected) monitor.shutdown(); });
   $('optPoll').value = String(state.pollMs);
   $('optPoll').addEventListener('change', function () { state.pollMs = Number($('optPoll').value); save(); });
   $('optCounter').value = state.counterVar;
@@ -1034,14 +1579,22 @@
       demoPrinter.print('^XA^FO40,40^FDOrder ' + (demoPrinter.count + 1) + '^FS^FO40,100^FD' + name + '^FS^XZ');
       log('Pretend printer printed a ticket for ' + name);
     });
+    var demoProblem = function (buttonId, bit, breakText, fixText) {
+      $(buttonId).addEventListener('click', function () {
+        var on = !(demoPrinter.errorBits & bit);
+        demoPrinter.setProblem(on ? demoPrinter.errorBits | bit : demoPrinter.errorBits & ~bit);
+        $(buttonId).textContent = on ? fixText : breakText;
+      });
+    };
+    demoProblem('demoLabels', 0x1, 'Run out of labels', 'Load labels');
+    demoProblem('demoLid', 0x4, 'Open the lid', 'Close the lid');
   } else if (!navigator.bluetooth) {
     $('noBle').classList.remove('hidden');
     $('connect').disabled = true;
   }
 
   renderCustomers();
-  renderTickets();
-  renderTally();
+  renderTickets();   // also draws the stats
 })();
 </script>
 </body>
