@@ -72,7 +72,10 @@
   .problem { border-color: var(--bad); }
   .problem strong { color: var(--bad); }
   li.day { color: var(--muted); font-size: 13px; text-transform: uppercase; letter-spacing: .05em; padding: 14px 0 4px; border-top: 0; }
-  li.tk { display: block; }
+  li.tk, li.cust { display: block; }
+  .custName { font-weight: 600; }
+  .wording { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 2px 0 2px 12px;
+             font-size: 15px; }
   .tkMain { display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; cursor: pointer; }
   .tkLabel { font-weight: 400; }
   .tkMain time { font-weight: 400; }
@@ -170,12 +173,14 @@
 
   <div class="card">
     <h2>Customers to watch</h2>
-    <div class="row">
-      <input id="newName" type="text" placeholder="Customer name" autocomplete="off" autocapitalize="words" enterkeyhint="done">
+    <input id="newName" type="text" placeholder="Name to announce, e.g. Carquest Watkins Glen" autocomplete="off" autocapitalize="words" enterkeyhint="next">
+    <div class="row" style="margin-top:8px">
+      <input id="newMatch" type="text" placeholder="What the label says, e.g. CQ IND# 2947" autocomplete="off" autocapitalize="none" spellcheck="false" enterkeyhint="done">
       <button id="addName" class="small">Add</button>
     </div>
     <ul id="customers"></ul>
-    <p id="noCustomers" class="empty">No customers yet. Type the name the way it's printed on the ticket.</p>
+    <p id="noCustomers" class="empty">No customers yet.</p>
+    <p class="sub">The name is what you hear and see. "What the label says" is the wording to look for. A customer can have several wordings: tap a customer to add more, or add the same name again with another wording.</p>
   </div>
 
   <div class="card">
@@ -256,7 +261,7 @@
     <pre id="log">—</pre>
   </details>
 
-  <p class="sub" style="text-align:center">Ticket Bell version 7</p>
+  <p class="sub" style="text-align:center">Ticket Bell version 8</p>
 </main>
 
 <div id="overlay" class="hidden" role="alertdialog" aria-live="assertive">
@@ -409,9 +414,17 @@
     // EPL, CPCL and plain-text jobs don't use ^FD, so fall back to searching everything.
     var text = fields.length ? fields.join('\n') : jobData.trim();
     var hay = ' ' + normalize(text) + ' ';
-    var matches = (customers || []).filter(function (name) {
-      var k = normalize(name);
-      return k && hay.indexOf(partial ? k : ' ' + k + ' ') !== -1;
+    // A customer is either a plain string, or { name, matches: [wordings that may appear on the label] }.
+    // The result lists each matched customer's name once, however many of its wordings were found.
+    var matches = [];
+    (customers || []).forEach(function (c) {
+      var name = typeof c === 'string' ? c : c && c.name;
+      var wordings = typeof c === 'string' ? [c] : (c && c.matches && c.matches.length ? c.matches : [name]);
+      var found = wordings.some(function (w) {
+        var k = normalize(w || '');
+        return k && hay.indexOf(partial ? k : ' ' + k + ' ') !== -1;
+      });
+      if (found && name && matches.indexOf(name) === -1) matches.push(name);
     });
     return {
       text: text.slice(0, 5000),
@@ -911,6 +924,11 @@
   var GAP_MS = 10000;      // quiet time between repeats of an announcement
   var LINGER_MS = 3000;    // how long the alert stays up after the last one
   try { Object.assign(state, JSON.parse(localStorage.getItem('ticketbell') || '{}')); } catch (e) {}
+  // Customers used to be plain names. Each is now a name plus the wordings to look for on the label.
+  state.customers = (state.customers || []).map(function (c) {
+    if (typeof c === 'string') return { name: c, matches: [c] };
+    return c && c.name ? { name: c.name, matches: (c.matches && c.matches.length ? c.matches : [c.name]) } : null;
+  }).filter(Boolean);
   function save() { try { localStorage.setItem('ticketbell', JSON.stringify(state)); } catch (e) {} }
 
   var logLines = [];
@@ -1503,31 +1521,88 @@
   });
 
   // ---------- Lists ----------
+  var openCustomer = -1;   // the customer whose wordings are being edited
+  function sameText(a, b) { return TB.normalize(a) === TB.normalize(b); }
+  function addWording(customer, wording) {
+    wording = wording.trim();
+    if (wording && !customer.matches.some(function (m) { return sameText(m, wording); })) customer.matches.push(wording);
+  }
   function renderCustomers() {
     var ul = $('customers');
     ul.textContent = '';
-    state.customers.forEach(function (name, i) {
-      var li = document.createElement('li');
-      var span = document.createElement('span');
-      span.textContent = name;
-      var x = document.createElement('button');
-      x.className = 'x'; x.textContent = '×'; x.setAttribute('aria-label', 'Remove ' + name);
-      x.addEventListener('click', function () { state.customers.splice(i, 1); save(); renderCustomers(); });
-      li.appendChild(span); li.appendChild(x); ul.appendChild(li);
+    state.customers.forEach(function (c, i) {
+      var open = openCustomer === i;
+      var li = el('li', 'cust');
+      var head = el('div', 'tkMain');
+      head.setAttribute('role', 'button');
+      var text = el('div');
+      text.appendChild(el('div', 'custName', c.name));
+      if (!open) text.appendChild(el('div', 'tkSub', 'Looks for: ' + c.matches.join(' · ')));
+      head.appendChild(text);
+      head.appendChild(el('span', 'tkSub', open ? 'Close' : 'Edit'));
+      head.addEventListener('click', function () { openCustomer = open ? -1 : i; renderCustomers(); });
+      li.appendChild(head);
+
+      if (open) {
+        li.appendChild(el('div', 'tkSub', 'Looks for any of these on the label:'));
+        c.matches.forEach(function (wording, j) {
+          var row = el('div', 'wording');
+          row.appendChild(el('span', '', wording));
+          var x = el('button', 'x', '×');
+          x.setAttribute('aria-label', 'Remove wording ' + wording);
+          x.addEventListener('click', function () {
+            c.matches.splice(j, 1);
+            if (!c.matches.length) c.matches.push(c.name);   // a customer always looks for something
+            save(); renderCustomers();
+          });
+          row.appendChild(x);
+          li.appendChild(row);
+        });
+        var add = el('div', 'tkActions');
+        var input = el('input');
+        input.type = 'text';
+        input.placeholder = 'Another wording on the label';
+        input.autocapitalize = 'none';
+        input.style.flex = '1';
+        var addIt = function () { addWording(c, input.value); save(); renderCustomers(); };
+        input.addEventListener('keydown', function (ev) { if (ev.key === 'Enter') addIt(); });
+        var addBtn = el('button', 'small', 'Add');
+        addBtn.addEventListener('click', addIt);
+        add.appendChild(input);
+        add.appendChild(addBtn);
+        li.appendChild(add);
+        var remove = el('button', 'small plain', 'Remove ' + c.name);
+        remove.style.marginTop = '8px';
+        remove.addEventListener('click', function () {
+          state.customers.splice(i, 1);
+          openCustomer = -1;
+          save(); renderCustomers();
+        });
+        li.appendChild(remove);
+      }
+      ul.appendChild(li);
     });
     $('noCustomers').classList.toggle('hidden', state.customers.length > 0);
   }
   function addCustomer() {
     var name = $('newName').value.trim();
-    var exists = state.customers.some(function (c) { return TB.normalize(c) === TB.normalize(name); });
-    if (name && !exists) { state.customers.push(name); save(); renderCustomers(); }
+    var wording = $('newMatch').value.trim();
+    if (!name) name = wording;              // only the label wording given: use it as the name too
+    if (!name) return;
+    var existing = state.customers.filter(function (c) { return sameText(c.name, name); })[0];
+    if (existing) addWording(existing, wording || name);
+    else state.customers.push({ name: name, matches: [wording || name] });
+    save();
+    renderCustomers();
     $('newName').value = '';
+    $('newMatch').value = '';
   }
 
   // ---------- Wiring ----------
   $('connect').addEventListener('click', function () { if (wanted) disconnect(); else connect(); });
   $('addName').addEventListener('click', addCustomer);
-  $('newName').addEventListener('keydown', function (e) { if (e.key === 'Enter') addCustomer(); });
+  $('newName').addEventListener('keydown', function (e) { if (e.key === 'Enter') $('newMatch').focus(); });
+  $('newMatch').addEventListener('keydown', function (e) { if (e.key === 'Enter') addCustomer(); });
   $('testAlert').addEventListener('click', function () { unlockSound(); showVip(['Test Customer']); });
 
   function bindCheck(id, key, after) {

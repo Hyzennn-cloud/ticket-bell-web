@@ -140,9 +140,17 @@
     // EPL, CPCL and plain-text jobs don't use ^FD, so fall back to searching everything.
     var text = fields.length ? fields.join('\n') : jobData.trim();
     var hay = ' ' + normalize(text) + ' ';
-    var matches = (customers || []).filter(function (name) {
-      var k = normalize(name);
-      return k && hay.indexOf(partial ? k : ' ' + k + ' ') !== -1;
+    // A customer is either a plain string, or { name, matches: [wordings that may appear on the label] }.
+    // The result lists each matched customer's name once, however many of its wordings were found.
+    var matches = [];
+    (customers || []).forEach(function (c) {
+      var name = typeof c === 'string' ? c : c && c.name;
+      var wordings = typeof c === 'string' ? [c] : (c && c.matches && c.matches.length ? c.matches : [name]);
+      var found = wordings.some(function (w) {
+        var k = normalize(w || '');
+        return k && hay.indexOf(partial ? k : ' ' + k + ' ') !== -1;
+      });
+      if (found && name && matches.indexOf(name) === -1) matches.push(name);
     });
     return {
       text: text.slice(0, 5000),
