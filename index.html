@@ -147,6 +147,7 @@
   <div id="memWarn" class="card problem hidden" role="alert"></div>
   <div id="leftOn" class="card notice hidden" role="status"></div>
   <div id="busy" class="card notice hidden" role="status"></div>
+  <div id="soundOff" class="card problem hidden" role="alert"><strong>🔇 Sound is asleep: tap here</strong><div class="sub">The iPhone pauses this page's sound after a call, a locked screen or a visit to another app. Until you tap the page, tickets show on screen but make no sound.</div></div>
 
   <div id="noBle" class="card notice hidden">
     <strong>This browser can't use Bluetooth.</strong>
@@ -281,7 +282,7 @@
     <pre id="log">—</pre>
   </details>
 
-  <p class="sub" style="text-align:center">Ticket Bell version 18</p>
+  <p class="sub" style="text-align:center">Ticket Bell version 19</p>
 </main>
 
 <div id="overlay" class="hidden" role="alert" aria-live="assertive">
@@ -1278,7 +1279,9 @@
     var mixed = applyMix();
     try {
       audio = audio || new (window.AudioContext || window.webkitAudioContext)();
-      audio.resume();
+      audio.onstatechange = showSoundState;
+      var p = audio.resume();
+      if (p && p.then) p.then(showSoundState, showSoundState);
     } catch (e) {}
     return mixed;
   }
@@ -1300,13 +1303,40 @@
     o.connect(g); g.connect(audio.destination);
     o.start(at); o.stop(at + dur + 0.05);
   }
+  // An iPhone puts a page's sound to sleep after a call, a locked screen or a visit to another app, and
+  // only a tap on the page is sure to wake it. So: say so on screen, and let any tap wake it.
+  var asleepNoted = false;
+  function soundAsleep() { return !!audio && audio.state !== 'running'; }
+  function showSoundState() {
+    var asleep = soundAsleep() && wanted;
+    $('soundOff').classList.toggle('hidden', !asleep);
+    if (!asleep) asleepNoted = false;
+  }
   function wakeSound() {
-    // The phone can put the page's sound to sleep (a call, another app, a locked screen). Wake it again.
-    try { if (audio && audio.state !== 'running') audio.resume(); } catch (e) {}
+    try {
+      if (!soundAsleep()) return;
+      var p = audio.resume();
+      if (p && p.then) p.then(showSoundState, showSoundState);
+    } catch (e) {}
+  }
+  /** Runs fn once the sound is awake. If it can't be woken without a tap, says so instead. */
+  function whenAwake(fn) {
+    if (!audio) return;
+    if (!soundAsleep()) { fn(); return; }
+    if (!asleepNoted) {
+      asleepNoted = true;
+      log('The sound was asleep (' + audio.state + ') when an alert came in. Tap the page to wake it.');
+    }
+    var after = function () { showSoundState(); if (!soundAsleep()) fn(); };
+    try {
+      var p = audio.resume();
+      if (p && p.then) p.then(after, showSoundState); else after();
+    } catch (e) { showSoundState(); }
   }
   function chime(kind) {
-    if (!audio) return;
-    wakeSound();
+    whenAwake(function () { ringChime(kind); });
+  }
+  function ringChime(kind) {
     var t = audio.currentTime + 0.05;
     if (kind === 'vip') {
       [0, 0.8, 1.6].forEach(function (off) {
@@ -1321,7 +1351,7 @@
     } else if (kind === 'lost') {
       tone(330, t, 0.35, 0.6); tone(247, t + 0.4, 0.5, 0.6);
     } else {
-      tone(660, t, 0.35, 0.5);
+      tone(784, t, 0.7, 0.8); tone(587, t + 0.4, 0.9, 0.8);
     }
   }
   // ---------- Recorded voice ----------
@@ -1355,19 +1385,20 @@
   /** Plays recordings one after another. Returns how long they take, in milliseconds. */
   function playClips(keys) {
     if (!audio) return 0;
-    wakeSound();
-    var t = audio.currentTime + 0.05, start = t;
-    keys.forEach(function (key) {
-      var buf = clipBuffer(key);
-      if (!buf) return;
-      var src = audio.createBufferSource();
-      src.buffer = buf;
-      src.connect(audio.destination);
-      src.start(t);
-      liveClips.push(src);
-      t += buf.duration + 0.22;
+    var bufs = keys.map(clipBuffer).filter(Boolean), total = 0.05;
+    bufs.forEach(function (buf) { total += buf.duration + 0.22; });
+    whenAwake(function () {
+      var t = audio.currentTime + 0.05;
+      bufs.forEach(function (buf) {
+        var src = audio.createBufferSource();
+        src.buffer = buf;
+        src.connect(audio.destination);
+        src.start(t);
+        liveClips.push(src);
+        t += buf.duration + 0.22;
+      });
     });
-    return Math.round((t - start) * 1000);
+    return Math.round(total * 1000);
   }
   function stopVoice() {
     liveClips.forEach(function (s) { try { s.stop(); } catch (e) {} });
@@ -1856,7 +1887,7 @@
       // At most one beep per 10 seconds, and no talking over a customer announcement.
       lastOtherBeep = Date.now();
       chime('other');
-      if (!announcer.active) say('Ticket printed', 500, ['printed']);
+      if (!announcer.active) say('Ticket printed', 1400, ['printed']);
     }
   }
 
@@ -2103,6 +2134,7 @@
       return;
     }
     wakeSound();
+    setTimeout(showSoundState, 600);
     if (monitor.paused) { monitor.resume(); if (connected) log('Back in view: reading tickets again'); }
     renderChecks();
     if (!wanted) return;
@@ -2194,6 +2226,10 @@
   $('newName').addEventListener('keydown', function (e) { if (e.key === 'Enter') $('newMatch').focus(); });
   $('newMatch').addEventListener('keydown', function (e) { if (e.key === 'Enter') addCustomer(); });
   $('testAlert').addEventListener('click', function () { unlockSound(); showVip(['Test Customer']); });
+  // Any tap on the page wakes the sound: a tap is the one thing an iPhone always accepts for that.
+  window.addEventListener('touchend', wakeSound, true);
+  window.addEventListener('click', wakeSound, true);
+  setInterval(showSoundState, 3000);
   // Two sound checks that keep the chime and the voice apart, to find which one stops another app's music.
   $('testChime').addEventListener('click', function () {
     var mixed = wakeChime();
