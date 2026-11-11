@@ -240,6 +240,8 @@
       <select id="optTimes"><option value="1">Once</option><option value="2">Twice</option><option value="3">3 times</option></select></label>
     <label class="opt"><span>Go quiet when busy<small>Stops the chime and voice when this many tickets arrive within a minute</small></span>
       <select id="optRush"><option value="0">Never</option><option value="3">More than 3</option><option value="5">More than 5</option></select></label>
+    <label class="opt"><span>Music during alerts<small id="mixNote">How alerts share the speakers with music from another app</small></span>
+      <select id="optMix" style="max-width:55%"><option value="mix">Play over the music</option><option value="dip">Dip the music</option><option value="off">Let the phone decide</option></select></label>
     <label class="opt"><span>Voice type</span>
       <select id="optVoice" style="max-width:55%"><option value="">Automatic (deep)</option></select></label>
     <label class="opt" style="display:block"><span>Voice speed</span>
@@ -271,7 +273,7 @@
     <pre id="log">—</pre>
   </details>
 
-  <p class="sub" style="text-align:center">Ticket Bell version 12</p>
+  <p class="sub" style="text-align:center">Ticket Bell version 13</p>
 </main>
 
 <div id="overlay" class="hidden" role="alertdialog" aria-live="assertive">
@@ -1190,7 +1192,7 @@
   // ---------- Saved settings ----------
   var state = {
     customers: [], notifyOthers: true, speak: true, intercom: true, readTickets: true, partial: true,
-    times: 2, voice: '', rate: 0.95, pitch: 0.5, healthAlerts: true, pauseHidden: true, rushLimit: 3,
+    times: 2, voice: '', rate: 0.95, pitch: 0.5, healthAlerts: true, pauseHidden: true, rushLimit: 3, mix: 'mix',
     pollMs: 3000, counterVar: 'odometer.total_label_count'
   };
   var GAP_MS = 10000;      // quiet time between repeats of an announcement
@@ -1213,7 +1215,18 @@
 
   // ---------- Sound ----------
   var audio = null, lastOtherBeep = 0;
+  // Music from another app (Apple Music, Spotify) stops if the phone treats this page as a music player.
+  // Where the browser allows it, say our sounds are short alerts that play alongside the music.
+  var MIX_TYPES = { mix: 'ambient', dip: 'transient', off: 'auto' };
+  function mixSupported() {
+    try { return !!(navigator.audioSession && 'type' in navigator.audioSession); } catch (e) { return false; }
+  }
+  function applyMix() {
+    if (!mixSupported()) return false;
+    try { navigator.audioSession.type = MIX_TYPES[state.mix] || 'ambient'; return true; } catch (e) { return false; }
+  }
   function unlockSound() {
+    applyMix();
     try {
       audio = audio || new (window.AudioContext || window.webkitAudioContext)();
       audio.resume();
@@ -2051,6 +2064,17 @@
   $('optPitch').value = String(state.pitch);
   $('optPitch').addEventListener('change', function () { state.pitch = Number($('optPitch').value); save(); });
   $('optVoice').addEventListener('change', function () { state.voice = $('optVoice').value; save(); });
+  $('optMix').value = MIX_TYPES[state.mix] ? state.mix : 'mix';
+  $('optMix').addEventListener('change', function () {
+    state.mix = $('optMix').value; save();
+    log(applyMix() ? 'Music during alerts: ' + $('optMix').options[$('optMix').selectedIndex].text : 'Music during alerts: this browser does not offer the setting');
+  });
+  if (mixSupported()) {
+    applyMix();
+  } else {
+    $('optMix').disabled = true;
+    $('mixNote').textContent = 'This browser does not let a page choose. If music stops, turn Voice off and test again.';
+  }
   fillVoices();
   if (window.speechSynthesis && speechSynthesis.addEventListener) speechSynthesis.addEventListener('voiceschanged', fillVoices);
   bindCheck('optRead', 'readTickets', function () {
