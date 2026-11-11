@@ -116,7 +116,11 @@
     <summary>Settings</summary>
     <label class="opt"><span>Alert for other tickets<small>A short beep when a ticket isn't for a watched customer</small></span>
       <input id="optOthers" type="checkbox"></label>
+    <label class="opt"><span>Match parts of words<small>"Smith" also finds "Smithson". Short entries may cause false alarms.</small></span>
+      <input id="optPartial" type="checkbox"></label>
     <label class="opt"><span>Say the name out loud</span><input id="optSpeak" type="checkbox"></label>
+    <label class="opt"><span>Intercom announcement<small>A chime, then "Attention please. Ticket for…"</small></span>
+      <input id="optIntercom" type="checkbox"></label>
     <label class="opt"><span>Repeat alarm until I tap<small>For watched customers</small></span>
       <input id="optRepeat" type="checkbox"></label>
     <label class="opt"><span>Read ticket contents<small>Needed to recognise customer names</small></span>
@@ -148,7 +152,7 @@
   <div class="tap">Tap anywhere to dismiss</div>
 </div>
 
-<script src="ticketbell.js"></script>
+<script src="ticketbell.js?v=2"></script>
 <script>
 (function () {
   'use strict';
@@ -161,7 +165,7 @@
 
   // ---------- Saved settings ----------
   var state = {
-    customers: [], notifyOthers: true, speak: true, repeat: true, readTickets: true,
+    customers: [], notifyOthers: true, speak: true, intercom: true, repeat: true, readTickets: true, partial: true,
     pollMs: 3000, counterVar: 'odometer.total_label_count'
   };
   try { Object.assign(state, JSON.parse(localStorage.getItem('ticketbell') || '{}')); } catch (e) {}
@@ -201,15 +205,36 @@
       [0, 0.8, 1.6].forEach(function (off) {
         [880, 1109, 1319].forEach(function (f, i) { tone(f, t + off + i * 0.14, 0.5, 0.9); });
       });
+    } else if (kind === 'pa') {
+      // Intercom "bing-bong-bong" before an announcement.
+      [784, 659, 523].forEach(function (f, i) {
+        tone(f, t + i * 0.45, 1.1, 0.8);
+        tone(f * 2, t + i * 0.45, 0.7, 0.2);
+      });
     } else if (kind === 'lost') {
       tone(330, t, 0.35, 0.6); tone(247, t + 0.4, 0.5, 0.6);
     } else {
       tone(660, t, 0.35, 0.5);
     }
   }
-  function say(text, delayMs) {
+  function say(text, delayMs, intercom) {
     if (!state.speak || !window.speechSynthesis) return;
-    setTimeout(function () { try { speechSynthesis.speak(new SpeechSynthesisUtterance(text)); } catch (e) {} }, delayMs);
+    setTimeout(function () {
+      try {
+        var u = new SpeechSynthesisUtterance(text);
+        if (intercom) { u.rate = 0.8; u.pitch = 0.7; }   // slow and low, like a store announcement
+        speechSynthesis.speak(u);
+      } catch (e) {}
+    }, delayMs);
+  }
+  function announce(who) {
+    if (state.intercom && state.speak) {
+      chime('pa');
+      say('Attention please. Ticket for ' + who + '. I repeat. Ticket for ' + who + '.', 2000, true);
+    } else {
+      chime('vip');
+      say('Ticket for ' + who, 2500);
+    }
   }
 
   // ---------- Alerts ----------
@@ -218,15 +243,15 @@
     $('ovWho').textContent = who;
     $('ovWhen').textContent = 'Ticket printed at ' + clock();
     $('overlay').classList.remove('hidden');
-    chime('vip');
-    say('Ticket for ' + who, 2500);
+    announce(who);
     clearInterval(repeatTimer);
     if (state.repeat) {
-      repeatTimer = setInterval(function () { chime('vip'); say('Ticket for ' + who, 2500); }, 8000);
+      repeatTimer = setInterval(function () { announce(who); }, state.intercom && state.speak ? 15000 : 8000);
     }
   }
   $('overlay').addEventListener('click', function () {
     clearInterval(repeatTimer);
+    try { speechSynthesis.cancel(); } catch (e) {}
     $('overlay').classList.add('hidden');
   });
 
@@ -437,6 +462,8 @@
   }
   bindCheck('optOthers', 'notifyOthers');
   bindCheck('optSpeak', 'speak');
+  bindCheck('optPartial', 'partial');
+  bindCheck('optIntercom', 'intercom');
   bindCheck('optRepeat', 'repeat');
   bindCheck('optRead', 'readTickets', function () { monitor.applyCapture(); });
   $('optPoll').value = String(state.pollMs);

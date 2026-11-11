@@ -16,7 +16,9 @@
     return raw.split(/\r?\n/).filter(function (l) { return l.trim().indexOf('! U1') !== 0; }).join('\n');
   }
 
-  function analyze(raw, customers) {
+  /** opts.partial: an entry also matches inside a longer word ("Smith" finds "Smithson"). */
+  function analyze(raw, customers, opts) {
+    var partial = !!(opts && opts.partial);
     var jobData = stripOwnCommands(raw);
     var fields = [];
     var re = /\^FD([^\^~]*)/gi, m;
@@ -32,7 +34,7 @@
     var hay = ' ' + normalize(text) + ' ';
     var matches = (customers || []).filter(function (name) {
       var k = normalize(name);
-      return k && hay.indexOf(' ' + k + ' ') !== -1;
+      return k && hay.indexOf(partial ? k : ' ' + k + ' ') !== -1;
     });
     return {
       text: text.slice(0, 5000),
@@ -218,7 +220,7 @@
       })
       .then(function () {
         if (!self.running) return false;
-        var res = analyze(raw, self.settings().customers);
+        var res = analyze(raw, self.settings().customers, { partial: self.settings().partial });
         if (tidy && res.hasJobData) return true;          // a ticket is arriving; leave it for the job read
         return files.reduce(function (p, f) {
           return p.then(function () { return self.send('! U1 do "file.delete" "E:' + f + '"\r\n'); });
