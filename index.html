@@ -144,12 +144,13 @@
       <input id="optOthers" type="checkbox"></label>
     <label class="opt"><span>Match parts of words<small>"Smith" also finds "Smithson". Short entries may cause false alarms.</small></span>
       <input id="optPartial" type="checkbox"></label>
-    <label class="opt"><span>Say the name out loud</span><input id="optSpeak" type="checkbox"></label>
-    <label class="opt"><span>Intercom announcement<small>A chime, then "Attention please. Ticket for…"</small></span>
+    <label class="opt"><span>Voice<small>Says the customer's name. Turn off to keep only the chime.</small></span>
+      <input id="optSpeak" type="checkbox"></label>
+    <label class="opt"><span>Intercom chime<small>The "bing-bong" chime. Off gives a faster triple beep.</small></span>
       <input id="optIntercom" type="checkbox"></label>
     <label class="opt"><span>Announce each customer<small>10 seconds apart, then the alert closes by itself</small></span>
       <select id="optTimes"><option value="1">Once</option><option value="2">Twice</option><option value="3">3 times</option></select></label>
-    <label class="opt"><span>Voice</span>
+    <label class="opt"><span>Voice type</span>
       <select id="optVoice" style="max-width:55%"><option value="">Automatic (deep)</option></select></label>
     <label class="opt" style="display:block"><span>Voice speed</span>
       <input id="optRate" type="range" min="0.6" max="1.4" step="0.05" style="width:100%;margin-top:8px"></label>
@@ -176,7 +177,7 @@
     <pre id="log">—</pre>
   </details>
 
-  <p class="sub" style="text-align:center">Ticket Bell version 5</p>
+  <p class="sub" style="text-align:center">Ticket Bell version 6</p>
 </main>
 
 <div id="overlay" class="hidden" role="alertdialog" aria-live="assertive">
@@ -705,7 +706,9 @@
   /** One announcement: chime, then the names. Resolves when it has finished. */
   function playAnnouncement(names) {
     var what = (names.length > 1 ? 'Tickets for ' : 'Ticket for ') + listNames(names) + '.';
-    if (state.intercom && state.speak) {
+    // The chime follows the intercom switch; the voice follows its own switch.
+    // With the voice off, say() just waits for the chime to finish.
+    if (state.intercom) {
       chime('pa');
       return say('Attention please. ' + what, 2000);
     }
