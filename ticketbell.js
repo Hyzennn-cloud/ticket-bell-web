@@ -170,7 +170,7 @@
 
   /**
    * opts.settings(): { customers, readTickets, healthAlerts, counterVar, pollMs }
-   * opts.onEvent(e): e.type is 'ticket' | 'reading' | 'health' | 'memory' | 'lowmemory' | 'log'
+   * opts.onEvent(e): e.type is 'jobstart' | 'ticket' | 'reading' | 'health' | 'memory' | 'lowmemory' | 'log'
    * A transport has send(text) -> Promise and an onData(text) callback slot.
    *
    * What this does to the printer:
@@ -213,7 +213,7 @@
     this.settings = opts.settings;
     this.emit = opts.onEvent || function () {};
     this.timing = Object.assign(
-      { quietMs: 4000, rawFirstMs: 4000, rawIdleMs: 1000, tidyMs: 10 * 60 * 1000, fullTidyMs: 60 * 60 * 1000,
+      { quietMs: 2500, rawFirstMs: 4000, rawIdleMs: 1000, tidyMs: 10 * 60 * 1000, fullTidyMs: 60 * 60 * 1000,
         staleMs: 20000, healthMs: 10000, confirmMs: 2000, silentMs: 12000 },
       opts.timing
     );
@@ -510,7 +510,12 @@
     var old = this.baseline;
     this.baseline = n;
     if (old === null) { this.log('Watching ' + safeName(this.settings().counterVar) + ' (now ' + n + ')'); return; }
-    if (n > old) { this.pending += n - old; this.armJob(); }
+    if (n > old) {
+      // The first label of a job: report it at once, before the wait that gathers the rest of the job.
+      if (this.pending === 0 && !this.jobT) this.emit({ type: 'jobstart' });
+      this.pending += n - old;
+      this.armJob();
+    }
   };
 
   /** Labels that print close together count as one job. */

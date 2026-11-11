@@ -249,7 +249,9 @@
     <label class="opt"><span>Go quiet when busy<small>Stops the chime and voice when this many tickets arrive within a minute</small></span>
       <select id="optRush"><option value="0">Never</option><option value="3">More than 3</option><option value="5">More than 5</option></select></label>
     <label class="opt"><span>Music during alerts<small id="mixNote">How alerts share the speakers with music from another app</small></span>
-      <select id="optMix" style="max-width:55%"><option value="mix">Play over the music</option><option value="off">Let the phone decide</option></select></label>
+      <select id="optMix" style="max-width:55%"><option value="mix">Play over the music</option><option value="pause">Pause the music, then resume</option><option value="off">Let the phone decide</option></select></label>
+    <label class="opt"><span>Alert loudness<small>How hard the chime and voice are pushed. The phone's volume buttons still set the overall level.</small></span>
+      <select id="optLoud"><option value="normal">Normal</option><option value="loud">Loud</option><option value="max">Extra loud</option></select></label>
     <label class="opt"><span>Voice type<small>Type, speed and pitch apply to the phone voice</small></span>
       <select id="optVoice" style="max-width:55%"><option value="">Automatic (deep)</option></select></label>
     <label class="opt" style="display:block"><span>Voice speed</span>
@@ -263,7 +265,7 @@
     <label class="opt"><span>Printer problem alerts<small>Out of labels, lid open and similar</small></span>
       <input id="optHealth" type="checkbox"></label>
     <label class="opt"><span>Check every</span>
-      <select id="optPoll"><option value="2000">2 seconds</option><option value="3000">3 seconds</option>
+      <select id="optPoll"><option value="1000">1 second</option><option value="2000">2 seconds</option><option value="3000">3 seconds</option>
         <option value="5000">5 seconds</option><option value="10000">10 seconds</option></select></label>
     <label class="opt" style="display:block"><span>Counter setting</span>
       <input id="optCounter" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" style="margin-top:8px"></label>
@@ -283,7 +285,7 @@
     <pre id="log">—</pre>
   </details>
 
-  <p class="sub" style="text-align:center">Ticket Bell version 20</p>
+  <p class="sub" style="text-align:center">Ticket Bell version 21</p>
 </main>
 
 <div id="overlay" class="hidden" role="alert" aria-live="assertive">
@@ -498,7 +500,7 @@
 
   /**
    * opts.settings(): { customers, readTickets, healthAlerts, counterVar, pollMs }
-   * opts.onEvent(e): e.type is 'ticket' | 'reading' | 'health' | 'memory' | 'lowmemory' | 'log'
+   * opts.onEvent(e): e.type is 'jobstart' | 'ticket' | 'reading' | 'health' | 'memory' | 'lowmemory' | 'log'
    * A transport has send(text) -> Promise and an onData(text) callback slot.
    *
    * What this does to the printer:
@@ -541,7 +543,7 @@
     this.settings = opts.settings;
     this.emit = opts.onEvent || function () {};
     this.timing = Object.assign(
-      { quietMs: 4000, rawFirstMs: 4000, rawIdleMs: 1000, tidyMs: 10 * 60 * 1000, fullTidyMs: 60 * 60 * 1000,
+      { quietMs: 2500, rawFirstMs: 4000, rawIdleMs: 1000, tidyMs: 10 * 60 * 1000, fullTidyMs: 60 * 60 * 1000,
         staleMs: 20000, healthMs: 10000, confirmMs: 2000, silentMs: 12000 },
       opts.timing
     );
@@ -838,7 +840,12 @@
     var old = this.baseline;
     this.baseline = n;
     if (old === null) { this.log('Watching ' + safeName(this.settings().counterVar) + ' (now ' + n + ')'); return; }
-    if (n > old) { this.pending += n - old; this.armJob(); }
+    if (n > old) {
+      // The first label of a job: report it at once, before the wait that gathers the rest of the job.
+      if (this.pending === 0 && !this.jobT) this.emit({ type: 'jobstart' });
+      this.pending += n - old;
+      this.armJob();
+    }
   };
 
   /** Labels that print close together count as one job. */
@@ -1236,12 +1243,14 @@
   // ---------- Saved settings ----------
   var state = {
     customers: [], notifyOthers: true, speak: true, intercom: true, readTickets: true, partial: true,
-    times: 2, voice: '', rate: 0.95, pitch: 0.5, healthAlerts: true, pauseHidden: true, rushLimit: 3, mix: 'mix', voiceKind: 'rec',
-    pollMs: 3000, counterVar: 'odometer.total_label_count'
+    times: 2, voice: '', rate: 0.95, pitch: 0.5, healthAlerts: true, pauseHidden: true, rushLimit: 3, mix: 'mix', voiceKind: 'rec', loud: 'loud',
+    pollMs: 2000, counterVar: 'odometer.total_label_count'
   };
   var GAP_MS = 10000;      // quiet time between repeats of an announcement
   var LINGER_MS = 1500;    // how long the banner stays after an announcement
   try { Object.assign(state, JSON.parse(localStorage.getItem('ticketbell') || '{}')); } catch (e) {}
+  // The check used to run every 3 seconds. Move anyone still on that old default to the quicker one.
+  if (!state.v) { if (state.pollMs === 3000) state.pollMs = 2000; state.v = 2; }
   // Customers used to be plain names. Each is now a name plus the wordings to look for on the label.
   state.customers = (state.customers || []).map(function (c) {
     if (typeof c === 'string') return { name: c, matches: [c] };
@@ -1262,7 +1271,7 @@
   // Music from another app (Apple Music, Spotify) stops if the phone treats this page as a music player.
   // Where the browser allows it, say our sounds are short alerts that play alongside the music.
   // An iPhone treats "transient" exactly like "ambient": a page cannot make other music dip.
-  var MIX_TYPES = { mix: 'ambient', dip: 'ambient', off: 'auto' };
+  var MIX_TYPES = { mix: 'ambient', dip: 'ambient', pause: 'transient-solo', off: 'auto' };
   function mixSupported() {
     try { return !!(navigator.audioSession && 'type' in navigator.audioSession); } catch (e) { return false; }
   }
@@ -1283,6 +1292,42 @@
       hum = o;
     } catch (e) {}
   }
+  // Everything audible goes through one boost with soft limiting, so alerts are loud without crackling.
+  var out = null, LOUD = { normal: 1, loud: 2.5, max: 5 };
+  function shapeOutput() {
+    if (!audio) return;
+    try {
+      var k = LOUD[state.loud] || LOUD.loud, n = 2049, curve = new Float32Array(n), top = Math.tanh(k);
+      for (var i = 0; i < n; i++) curve[i] = Math.tanh(k * (i / (n - 1) * 2 - 1)) / top;
+      var node = audio.createWaveShaper();   // a new one each time: its curve can only be set once
+      node.curve = curve;
+      node.oversample = '2x';
+      node.connect(audio.destination);
+      if (out) { try { out.disconnect(); } catch (e) {} }
+      out = node;
+    } catch (e) { out = null; }
+  }
+  function speaker() { return out || audio.destination; }
+
+  // "Pause the music, then resume": the page takes the speakers for the alert, then lets go of them,
+  // which is the phone's signal to the music app to carry on. Between alerts the page's sound rests.
+  var resting = false, waking = false, restT = null, busyUntil = 0;
+  function restMode() { return state.mix === 'pause' && mixSupported(); }
+  /** Sound will be playing for the next ms milliseconds. */
+  function soundFor(ms) {
+    busyUntil = Math.max(busyUntil, Date.now() + ms);
+    clearTimeout(restT);
+    if (restMode()) restT = setTimeout(rest, busyUntil - Date.now() + 500);
+  }
+  function rest() {
+    if (!audio || !restMode()) return;
+    if (Date.now() < busyUntil) { soundFor(0); return; }
+    resting = true;
+    try { audio.suspend(); } catch (e) {}
+    showSoundState();
+  }
+  var CHIME_MS = { pa: 2300, vip: 2500, other: 1500, lost: 1100 };
+
   var soundNoted = false;
   /** Wakes the voice. Only done while the voice is on: on an iPhone any speech can stop another app's music. */
   function primeVoice() {
@@ -1294,7 +1339,10 @@
     try {
       audio = audio || new (window.AudioContext || window.webkitAudioContext)();
       audio.onstatechange = showSoundState;
+      if (!out) shapeOutput();
       keepSoundBusy();
+      resting = false;
+      soundFor(300);
       var p = audio.resume();
       if (p && p.then) p.then(showSoundState, showSoundState);
     } catch (e) {}
@@ -1315,13 +1363,13 @@
     g.gain.setValueAtTime(0.0001, at);
     g.gain.linearRampToValueAtTime(vol, at + 0.02);
     g.gain.exponentialRampToValueAtTime(0.0001, at + dur);
-    o.connect(g); g.connect(audio.destination);
+    o.connect(g); g.connect(speaker());
     o.start(at); o.stop(at + dur + 0.05);
   }
   // An iPhone puts a page's sound to sleep after a call, a locked screen or a visit to another app, and
   // only a tap on the page is sure to wake it. So: say so on screen, and let any tap wake it.
   var asleepNoted = false;
-  function soundAsleep() { return !!audio && audio.state !== 'running'; }
+  function soundAsleep() { return !!audio && audio.state !== 'running' && !resting && !waking; }
   function showSoundState() {
     var asleep = soundAsleep() && wanted;
     $('soundOff').classList.toggle('hidden', !asleep);
@@ -1337,18 +1385,26 @@
   /** Runs fn once the sound is awake. If it can't be woken without a tap, says so instead. */
   function whenAwake(fn) {
     if (!audio) return;
-    if (!soundAsleep()) { fn(); return; }
-    if (!asleepNoted) {
+    if (audio.state === 'running') { resting = false; fn(); return; }
+    if (!resting && !asleepNoted) {
       asleepNoted = true;
       log('The sound was asleep (' + audio.state + ') when an alert came in. Tap the page to wake it.');
     }
-    var after = function () { showSoundState(); if (!soundAsleep()) fn(); };
+    resting = false;
+    waking = true;
+    var settle = function () {
+      waking = false;
+      showSoundState();
+      if (audio.state === 'running') fn();
+      else log('The sound would not wake (' + audio.state + '). Tap the page to wake it.');
+    };
     try {
       var p = audio.resume();
-      if (p && p.then) p.then(after, showSoundState); else after();
-    } catch (e) { showSoundState(); }
+      if (p && p.then) p.then(settle, settle); else settle();
+    } catch (e) { settle(); }
   }
   function chime(kind) {
+    soundFor(CHIME_MS[kind] || CHIME_MS.other);
     whenAwake(function () { ringChime(kind); });
   }
   function ringChime(kind) {
@@ -1402,12 +1458,13 @@
     if (!audio) return 0;
     var bufs = keys.map(clipBuffer).filter(Boolean), total = 0.05;
     bufs.forEach(function (buf) { total += buf.duration + 0.22; });
+    soundFor(Math.round(total * 1000));
     whenAwake(function () {
       var t = audio.currentTime + 0.05;
       bufs.forEach(function (buf) {
         var src = audio.createBufferSource();
         src.buffer = buf;
-        src.connect(audio.destination);
+        src.connect(speaker());
         src.start(t);
         liveClips.push(src);
         t += buf.duration + 0.22;
@@ -1506,6 +1563,9 @@
   /** One announcement: the chime (first time only), then the names. Resolves when it has finished. */
   function playAnnouncement(names, fresh) {
     var what = (names.length > 1 ? 'Tickets for ' : 'Ticket for ') + listNames(names) + '.';
+    // The chime may already have rung when the first label printed.
+    if (fresh && skipNextChime) { fresh = false; }
+    skipNextChime = false;
     // The chime follows the intercom switch; the voice follows its own switch.
     // With the voice off, say() just waits for the chime to finish.
     // A repeat is the voice alone: one chime per alert.
@@ -1859,8 +1919,24 @@
     chime('lost');
   }
 
+  /**
+   * The first label of a job has just printed: ring straight away. Who it is for is said a few
+   * seconds later, once the ticket has been read.
+   */
+  var earlyChimeAt = 0, skipNextChime = false;
+  function onJobStart() {
+    if (!state.notifyOthers) return;   // only watched customers ring, and it isn't known yet who this is for
+    if (rush.isQuiet(Date.now()) || announcer.active) return;
+    if (Date.now() - lastOtherBeep <= 10000) return;
+    lastOtherBeep = Date.now();
+    earlyChimeAt = Date.now();
+    chime(state.intercom ? 'pa' : 'other');
+  }
+
   function onTicket(e) {
     var vip = e.matches.length > 0;
+    var rang = Date.now() - earlyChimeAt < 20000;   // this job rang when its first label printed
+    earlyChimeAt = 0;
     var snippet = '';
     if (e.read && !e.isImage) {
       snippet = e.text.split(String.fromCharCode(10)).map(function (l) { return l.trim(); })
@@ -1903,10 +1979,14 @@
       : soundAsleep() ? 'the phone had put the sound to sleep (' + audio.state + '), so it may be late or silent'
       : '';
     if (vip) {
+      skipNextChime = rang;
       showVip(e.matches);
       noteAlert(sound || 'announced ' + e.matches.join(', '));
     } else if (!state.notifyOthers) {
       noteAlert('no sound, because "Alert for other tickets" is off');
+    } else if (rang) {
+      if (!announcer.active) say('Ticket printed', 100, ['printed']);
+      noteAlert(sound || 'chime played');
     } else if (Date.now() - lastOtherBeep > 10000) {
       // At most one chime per 10 seconds, and no talking over a customer announcement.
       lastOtherBeep = Date.now();
@@ -1956,6 +2036,7 @@
     settings: function () { return state; },
     onEvent: function (e) {
       if (e.type === 'log') log(e.text);
+      else if (e.type === 'jobstart') onJobStart();
       else if (e.type === 'ticket') onTicket(e);
       else if (e.type === 'health') onHealth(e);
       else if (e.type === 'readingstopped') onReadingStopped(e);
@@ -2305,9 +2386,12 @@
   $('optPitch').value = String(state.pitch);
   $('optPitch').addEventListener('change', function () { state.pitch = Number($('optPitch').value); save(); });
   $('optVoice').addEventListener('change', function () { state.voice = $('optVoice').value; save(); });
-  $('optMix').value = state.mix === 'off' ? 'off' : 'mix';
+  $('optMix').value = state.mix === 'off' || state.mix === 'pause' ? state.mix : 'mix';
   $('optMix').addEventListener('change', function () {
     state.mix = $('optMix').value; save();
+    // Changing this is a tap, so the sound can be woken here if it was resting.
+    if (audio && !restMode() && resting) { resting = false; wakeSound(); }
+    if (restMode()) soundFor(0);
     log(applyMix() ? 'Music during alerts: ' + $('optMix').options[$('optMix').selectedIndex].text : 'Music during alerts: this browser does not offer the setting');
   });
   if (mixSupported()) {
@@ -2352,6 +2436,8 @@
   });
   // Closing the page: try to switch capture off on the way out. The browser may not allow time for it.
   window.addEventListener('pagehide', function () { if (connected) monitor.shutdown(); });
+  $('optLoud').value = LOUD[state.loud] ? state.loud : 'loud';
+  $('optLoud').addEventListener('change', function () { state.loud = $('optLoud').value; save(); shapeOutput(); });
   $('optPoll').value = String(state.pollMs);
   $('optPoll').addEventListener('change', function () { state.pollMs = Number($('optPoll').value); save(); });
   $('optCounter').value = state.counterVar;
